@@ -1,0 +1,109 @@
+智云助手 Pro 系统架构说明
+技术团队内部文档 | 版本：r20260310 | 架构师：王志远
+
+===== 整体架构概览 =====
+
+智云助手 Pro 采用经典 RAG（Retrieval-Augmented Generation）架构，
+分为三层：文档处理层、检索层、生成层。
+
+对外通过统一的 API 网关（Kong Gateway v3.5）暴露服务接口，
+前端应用通过 REST API 和 WebSocket 与后端通信。
+
+===== 文档处理层 =====
+
+文档解析引擎：
+- 主引擎：Unstructured.io（开源版本，私有化部署）
+- OCR 组件：PaddleOCR v2.7（处理扫描件，中文识别准确率 98.2%）
+- 表格解析：采用 Table Transformer 模型，将表格转为 Markdown 格式后入库
+- 公式处理：暂不支持数学公式渲染，以纯文本形式存储（2026 Q3 规划支持）
+
+文本切块策略：
+- 默认：按语义段落切分，目标 chunk 大小 512 tokens，最大 1024 tokens
+- 重叠窗口：相邻 chunk 重叠 50 tokens，避免边界信息丢失
+- 标题感知：自动识别 Word/PDF 标题层级，不跨标题切块
+
+Embedding 模型：
+- 国内部署：bge-m3（BAAI 出品，支持中英文混合，向量维度 1024）
+- 海外部署：text-embedding-3-large（OpenAI，向量维度 3072）
+- 批处理大小：64 条/批次，GPU 推理（A100），平均速度 1200 条/分钟
+
+===== 检索层 =====
+
+向量数据库：
+- 生产环境：Milvus v2.4（集群模式，3节点）
+- 开发/测试：ChromaDB（单节点，本地持久化）
+- 索引类型：HNSW（分层可导航小世界算法），ef=128，M=16
+- 相似度计算：余弦相似度（Cosine Similarity）
+
+检索策略（混合检索）：
+- 语义检索：向量相似度，权重 0.7
+- 关键词检索：BM25（基于 Elasticsearch 7.17），权重 0.3
+- 融合算法：Reciprocal Rank Fusion（RRF），合并两路召回结果
+- 重排序：BGE-Reranker-Large，对 Top-20 结果重排后取 Top-5 返回
+
+召回增强策略：
+- HyDE（假设文档嵌入）：对用户问题先让小模型生成假设答案，
+  用假设答案的向量去检索，提升 recall 约 12%（实测数据）
+- 父子文档检索：小 chunk 用于检索定位，大 chunk 用于生成上下文，
+  小 chunk 大小：128 tokens，父 chunk 大小：512 tokens
+
+===== 生成层 =====
+
+LLM 配置：
+- 国内合规版：通义千问 Qwen-Max（通过阿里云 API 调用）
+- 海外版：GPT-4o（通过 Azure OpenAI 调用，部署区域：East US 2）
+- 备用模型：Claude 3.5 Sonnet（当主模型不可用时自动切换）
+
+Prompt 工程：
+- 系统提示词版本：v14（上次更新 2026-02-28，减少幻觉率约 8%）
+- 上下文窗口使用策略：检索结果 + 对话历史合计不超过 12K tokens
+- 温度参数（Temperature）：0.1（优先准确性，抑制随机性）
+
+流式输出：
+- 协议：Server-Sent Events（SSE）
+- 前端使用 EventSource API 接收流式 token
+- 首字时延目标：< 1.5 秒（当前实测 P50=0.9s，P95=1.8s）
+
+===== 缓存策略 =====
+
+语义缓存（Semantic Cache）：
+- 实现方案：GPTCache（开源）
+- 逻辑：相似度 > 0.92 的问题直接返回缓存答案，不再调用 LLM
+- 缓存命中率：约 23%（节省约 23% LLM API 费用）
+- 缓存存储：Redis 7.0，TTL 24小时
+
+结果缓存：
+- 向量检索结果：Redis，TTL 15分钟
+- 文档 Embedding：持久化到向量库，不设过期
+
+===== 可观测性 =====
+
+监控方案：
+- 指标采集：Prometheus + Grafana（Dashboard ID：27834）
+- 链路追踪：Langfuse（记录每次 RAG 调用的检索结果、Prompt、回答及评分）
+- 日志：ELK Stack（Elasticsearch + Logstash + Kibana）
+
+关键告警规则：
+- P95 响应时延 > 5 秒：触发 PagerDuty 告警
+- LLM API 错误率 > 1%：触发钉钉群通知
+- Milvus 磁盘使用率 > 80%：触发扩容工单
+
+===== 部署架构 =====
+
+环境划分：
+- dev：开发环境，单节点，使用 ChromaDB + Qwen-7B 本地模型
+- staging：预发环境，与生产同配置但缩容，数据脱敏
+- prod：生产环境，多区域高可用
+
+生产环境资源：
+- 应用服务：4台 8C16G 云服务器，Nginx 负载均衡
+- Milvus 集群：3节点（16C64G），SSD 存储 2TB
+- GPU 服务器（Embedding 推理）：2台 A100 80G
+- Redis 集群：3主3从，内存 32GB
+
+===== 已知问题与待办 =====
+
+Issue #234：长文档（>50页）的表格解析偶发乱码，预计 2026 Q2 修复
+Issue #267：同一文档多次上传时，旧版本向量未能完全清除，影响检索准确性
+TODO：接入用户反馈的点赞/踩数据，用于 Embedding 微调（2026 H2 规划）
+TODO：多模态支持（图片中的图表内容检索），预研阶段，无明确排期

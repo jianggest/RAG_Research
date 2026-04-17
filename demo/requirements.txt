@@ -1,0 +1,9 @@
+# RAG Demo 核心依赖（必须安装）
+chromadb>=0.5.0
+sentence-transformers>=3.0.0
+
+# 可选：本地 LLM 后端（安装 Ollama 后使用）
+# ollama>=0.3.0
+
+# 可选：OpenAI 兼容 API 后端
+# openai>=1.0.0
