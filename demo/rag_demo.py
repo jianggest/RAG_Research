@@ -8,7 +8,8 @@
 ║  目的：通过实际运行，感受 RAG 为什么能让 LLM 回答私有数据问题       ║
 ║                                                              ║
 ║  运行：python rag_demo.py                                    ║
-║  依赖：pip install chromadb sentence-transformers            ║
+║  依赖（轻量）：pip install chromadb                           ║
+║  依赖（完整）：我    ║
 ╚══════════════════════════════════════════════════════════════╝
 
 【核心问题】
@@ -48,8 +49,14 @@ DOCS_DIR = Path(__file__).parent / "knowledge_base"
 # 向量库持久化目录
 CHROMA_DIR = str(Path(__file__).parent / "chroma_db")
 
-# Embedding 模型
-# paraphrase-multilingual-MiniLM-L12-v2：支持中英文，约 400MB，首次运行自动下载
+# Embedding 后端选择：
+#   "chroma"  → 使用 ChromaDB 内置模型（仅需 pip install chromadb，约 50MB）【推荐先用这个】
+#               模型：all-MiniLM-L6-v2，英文效果好，中文可用
+#   "sentence" → 使用 sentence-transformers（需额外安装 PyTorch，约 200MB+）
+#               模型：paraphrase-multilingual-MiniLM-L12-v2，中英文效果更好
+EMBEDDING_BACKEND = "sentence"
+
+# sentence-transformers 模式下使用的模型名称（EMBEDDING_BACKEND="sentence" 时生效）
 EMBEDDING_MODEL = "paraphrase-multilingual-MiniLM-L12-v2"
 
 # 文本切块参数
@@ -57,7 +64,7 @@ CHUNK_SIZE = 300    # 每个 chunk 的最大字符数
 CHUNK_OVERLAP = 50  # 相邻 chunk 的重叠字符数（避免边界信息丢失）
 
 # 检索返回的 Top-K 片段数
-TOP_K = 3
+TOP_K = 5
 
 # ── LLM 后端配置 ────────────────────────────────────────────────
 #
@@ -78,7 +85,7 @@ TOP_K = 3
 #
 LLM_BACKEND = "ollama"
 
-OLLAMA_MODEL = "gemma4"       # Ollama 使用的模型名称
+OLLAMA_MODEL = "qwen3.6:35b-a3b-q4_K_M"#"gemma4"       # Ollama 使用的模型名称
 OPENAI_MODEL = "gpt-4o-mini"    # OpenAI 使用的模型名称
 OPENAI_BASE_URL = None          # None = 使用官方地址；填写则使用自定义地址
 
@@ -89,10 +96,9 @@ OPENAI_BASE_URL = None          # None = 使用官方地址；填写则使用自
 
 def load_documents(docs_dir: Path) -> list:
     """
-    从目录读取所有 .txt 文档。
-
-    真实项目中，这里会替换为更强大的文档解析器，
-    支持 PDF、Word、Excel、网页等格式（如 Unstructured.io）。
+    从目录读取所有 .txt 和 .pdf 文档。
+    - .txt 直接读取文本
+    - .pdf 使用 Docling 解析，表格会转为 Markdown 格式保留结构
     """
     docs = []
 
@@ -100,19 +106,82 @@ def load_documents(docs_dir: Path) -> list:
         print(f"  ❌ 知识库目录不存在：{docs_dir}")
         sys.exit(1)
 
+    # 读取 .txt 文件
     for file_path in sorted(docs_dir.glob("*.txt")):
         content = file_path.read_text(encoding="utf-8")
         docs.append({
             "filename": file_path.name,
             "content": content,
         })
-        print(f"  📄 {file_path.name:<30} {len(content):>6} 字")
+        print(f"  📄 {file_path.name:<35} {len(content):>6} 字  [txt]")
+
+    # 读取 .pdf 文件（使用 Docling 解析）
+    pdf_files = sorted(docs_dir.glob("*.pdf"))
+    if pdf_files:
+        try:
+            from docling.document_converter import DocumentConverter
+        except ImportError:
+            print("  ❌ 缺少 Docling 库，无法解析 PDF。请运行：pip install docling")
+            sys.exit(1)
+
+        converter = DocumentConverter()
+        for file_path in pdf_files:
+            print(f"  📑 {file_path.name:<35}  解析中...", end="", flush=True)
+            result = converter.convert(str(file_path))
+            content = result.document.export_to_markdown()
+            content = filter_watermarks(content)
+            docs.append({
+                "filename": file_path.name,
+                "content": content,
+            })
+            print(f"\r  📑 {file_path.name:<35} {len(content):>6} 字  [pdf]")
 
     if not docs:
-        print(f"  ❌ knowledge_base/ 目录中没有找到 .txt 文件")
+        print(f"  ❌ knowledge_base/ 目录中没有找到 .txt 或 .pdf 文件")
         sys.exit(1)
 
     return docs
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  PDF 后处理：水印过滤
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def filter_watermarks(content: str, freq_threshold: int = 5) -> str:
+    """
+    过滤 Docling 解析 PDF 后产生的噪音：
+    1. 删除高频重复行（文字水印）—— 同一行出现次数 >= freq_threshold 视为水印
+    2. 删除图片占位符 <!-- image -->
+    3. 删除纯表格分隔线（仅含 | - : 空格 的行，无实际内容）
+    4. 合并连续空行
+    """
+    import re
+    from collections import Counter
+
+    lines = content.split('\n')
+
+    # 统计每行出现频率
+    line_counts = Counter(line.strip() for line in lines if line.strip())
+    watermark_lines = {line for line, cnt in line_counts.items() if cnt >= freq_threshold}
+
+    filtered = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            filtered.append('')
+            continue
+        if stripped in watermark_lines:
+            continue
+        if stripped == '<!-- image -->':
+            continue
+        # 纯表格分隔线：只含 | - : 空格
+        if re.fullmatch(r'[\|\-\s:]+', stripped):
+            continue
+        filtered.append(line)
+
+    # 合并连续空行为单个空行
+    result = re.sub(r'\n{3,}', '\n\n', '\n'.join(filtered))
+    return result.strip()
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -123,37 +192,134 @@ def chunk_documents(docs: list, chunk_size: int, overlap: int) -> list:
     """
     将长文档切成小块（Chunks）。
 
-    【为什么要切块？】
-    原因 1：Embedding 模型有输入长度上限（通常 512 tokens），长文档必须切块。
-    原因 2：切块后每块语义更集中，检索时能精确定位到相关段落，而不是返回整篇文章。
-    原因 3：LLM 的上下文窗口有限，只能把最相关的 3-5 个片段塞进 Prompt。
+    【策略】
+    - .txt 文档：滑动窗口固定切块（原有方式）
+    - .pdf 文档：Markdown 感知切块
+        ① 按标题（#/##/###）分节，节作为基本单位
+        ② 节内识别表格块，保证表格不被切断
+        ③ 非表格内容按空行分段
+        ④ 超过 chunk_size 的块再做降级拆分
 
-    【重叠的意义】
-    如果不重叠，关键信息可能恰好落在两个 chunk 的边界，被切断。
-    重叠 50 字确保边界附近的内容在两个 chunk 中都出现。
+    【为什么 PDF 要特殊处理？】
+    Docling 输出的是 Markdown，表格是 | col | col | 格式。
+    固定窗口会把表头和数据行切到不同 chunk，导致语义完全丢失。
     """
     chunks = []
-
     for doc in docs:
-        content = doc["content"]
-        start = 0
-        chunk_index = 0
+        if doc["filename"].endswith(".pdf"):
+            chunks.extend(_chunk_markdown(doc["content"], doc["filename"], chunk_size))
+        else:
+            chunks.extend(_chunk_text(doc["content"], doc["filename"], chunk_size, overlap))
+    return chunks
 
-        while start < len(content):
-            end = min(start + chunk_size, len(content))
-            chunk_text = content[start:end].strip()
 
-            if len(chunk_text) > 20:  # 过滤掉太短的碎片
-                chunks.append({
-                    "id": f"{doc['filename']}__chunk_{chunk_index:03d}",
-                    "text": chunk_text,
-                    "source": doc["filename"],
-                    "chunk_index": chunk_index,
-                })
-                chunk_index += 1
+def _chunk_text(content: str, source: str, chunk_size: int, overlap: int) -> list:
+    """原有滑动窗口切块，用于 .txt 文档。"""
+    chunks = []
+    start = 0
+    chunk_index = 0
+    while start < len(content):
+        end = min(start + chunk_size, len(content))
+        chunk_text = content[start:end].strip()
+        if len(chunk_text) > 20:
+            chunks.append({
+                "id": f"{source}__chunk_{chunk_index:03d}",
+                "text": chunk_text,
+                "source": source,
+                "chunk_index": chunk_index,
+            })
+            chunk_index += 1
+        start += chunk_size - overlap
+    return chunks
 
-            # 滑动窗口：下一个 chunk 从 (start + chunk_size - overlap) 开始
-            start += chunk_size - overlap
+
+def _extract_blocks(content: str) -> list:
+    """
+    将 Markdown 内容拆成语义块：
+    - 连续的 | 开头行合并为一个表格块
+    - 其余内容按空行分段
+    """
+    blocks = []
+    current_lines = []
+    in_table = False
+
+    for line in content.split('\n'):
+        is_table_line = line.strip().startswith('|')
+
+        if is_table_line:
+            if not in_table and current_lines:
+                blocks.append('\n'.join(current_lines))
+                current_lines = []
+            in_table = True
+            current_lines.append(line)
+        else:
+            if in_table:
+                blocks.append('\n'.join(current_lines))
+                current_lines = []
+                in_table = False
+            if not line.strip() and current_lines:
+                blocks.append('\n'.join(current_lines))
+                current_lines = []
+            elif line.strip():
+                current_lines.append(line)
+
+    if current_lines:
+        blocks.append('\n'.join(current_lines))
+
+    return [b.strip() for b in blocks if b.strip()]
+
+
+def _chunk_markdown(content: str, source: str, max_size: int) -> list:
+    """
+    Markdown 感知切块：按标题分节 → 节内按表格/段落分块 → 超大块降级拆分。
+    """
+    import re
+
+    chunks = []
+    chunk_index = 0
+
+    def append_chunk(text: str):
+        nonlocal chunk_index
+        text = text.strip()
+        if len(text) > 20:
+            chunks.append({
+                "id": f"{source}__chunk_{chunk_index:03d}",
+                "text": text,
+                "source": source,
+                "chunk_index": chunk_index,
+            })
+            chunk_index += 1
+
+    # 按标题行分节（保留标题本身在节内）
+    sections = re.split(r'(?=\n#{1,3} )', '\n' + content)
+
+    for section in sections:
+        section = section.strip()
+        if not section:
+            continue
+
+        if len(section) <= max_size:
+            append_chunk(section)
+        else:
+            # 节太大，按表格块 + 段落拆分，然后贪心合并
+            blocks = _extract_blocks(section)
+            current = ""
+            for block in blocks:
+                if len(block) > max_size:
+                    # 超大单块（超长表格或段落）：强制按字符拆分
+                    if current:
+                        append_chunk(current)
+                        current = ""
+                    for i in range(0, len(block), max_size):
+                        append_chunk(block[i:i + max_size])
+                elif len(current) + len(block) + 2 <= max_size:
+                    current = (current + "\n\n" + block).strip() if current else block
+                else:
+                    if current:
+                        append_chunk(current)
+                    current = block
+            if current:
+                append_chunk(current)
 
     return chunks
 
@@ -162,7 +328,7 @@ def chunk_documents(docs: list, chunk_size: int, overlap: int) -> list:
 #  步骤 3：向量化 + 建立索引
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-def build_index(chunks: list, chroma_dir: str, model_name: str):
+def build_index(chunks: list, chroma_dir: str):
     """
     将每个文本块转换为向量，存入 ChromaDB。
 
@@ -181,47 +347,72 @@ def build_index(chunks: list, chroma_dir: str, model_name: str):
     """
     try:
         import chromadb
-        from sentence_transformers import SentenceTransformer
-    except ImportError as e:
-        print(f"\n  ❌ 缺少依赖库：{e}")
-        print("  请运行：pip install chromadb sentence-transformers")
+    except ImportError:
+        print("\n  ❌ 缺少依赖库：chromadb")
+        print("  请运行：pip install chromadb")
         sys.exit(1)
 
-    print(f"\n  正在加载 Embedding 模型：{model_name}")
-    print("  （首次运行需从网络下载模型，约 400MB，请耐心等待）")
-    print("  （下载完成后会缓存到本地，后续运行无需重新下载）")
+    # ── 根据配置选择 Embedding 后端 ─────────────────────────────
+    embed_model = None  # sentence-transformers 模式下使用
 
-    embed_model = SentenceTransformer(model_name)
+    if EMBEDDING_BACKEND == "sentence":
+        try:
+            from sentence_transformers import SentenceTransformer
+        except ImportError:
+            print("\n  ❌ EMBEDDING_BACKEND='sentence' 需要安装额外依赖。")
+            print("  方案一（推荐，无需 GPU 库）：")
+            print("    pip install torch --index-url https://download.pytorch.org/whl/cpu")
+            print("    pip install sentence-transformers")
+            print("\n  方案二（改用轻量模式，无需 PyTorch）：")
+            print("    修改脚本配置：EMBEDDING_BACKEND = 'chroma'")
+            sys.exit(1)
 
-    # ChromaDB 持久化客户端（数据保存到本地目录）
+        print(f"\n  正在加载 Embedding 模型：{EMBEDDING_MODEL}")
+        print("  （首次运行需下载模型，约 400MB）")
+        embed_model = SentenceTransformer(EMBEDDING_MODEL)
+        ef = None  # 使用手动 encode，不用 ChromaDB 的 embedding_function
+    else:
+        # chroma 模式：使用 ChromaDB 内置的 all-MiniLM-L6-v2（基于 onnxruntime）
+        from chromadb.utils import embedding_functions
+        print("\n  使用 ChromaDB 内置 Embedding 模型（all-MiniLM-L6-v2）")
+        print("  （首次运行需下载模型，约 50MB，比 PyTorch 方案轻量很多）")
+        ef = embedding_functions.DefaultEmbeddingFunction()
+
+    # ── 初始化向量库 ─────────────────────────────────────────────
     client = chromadb.PersistentClient(path=chroma_dir)
 
-    # 删除已存在的同名集合（方便重新索引）
     try:
         client.delete_collection("rag_demo")
         print("  ℹ️  已清除旧索引，重新构建中...")
     except Exception:
         pass
 
-    collection = client.create_collection(
-        name="rag_demo",
-        metadata={"hnsw:space": "cosine"},  # 使用余弦相似度
-    )
+    if ef is not None:
+        # chroma 模式：让 ChromaDB 自动处理 embedding
+        collection = client.create_collection(
+            name="rag_demo",
+            embedding_function=ef,
+            metadata={"hnsw:space": "cosine"},
+        )
+    else:
+        collection = client.create_collection(
+            name="rag_demo",
+            metadata={"hnsw:space": "cosine"},
+        )
 
     texts = [c["text"] for c in chunks]
     ids = [c["id"] for c in chunks]
     metadatas = [{"source": c["source"], "chunk_index": c["chunk_index"]} for c in chunks]
 
     print(f"\n  正在向量化 {len(chunks)} 个文本块...")
-    # show_progress_bar=True 会显示进度条
-    embeddings = embed_model.encode(texts, show_progress_bar=True, batch_size=32)
 
-    collection.add(
-        ids=ids,
-        documents=texts,
-        embeddings=embeddings.tolist(),
-        metadatas=metadatas,
-    )
+    if embed_model is not None:
+        # sentence-transformers 模式：手动 encode 后存入
+        embeddings = embed_model.encode(texts, show_progress_bar=True, batch_size=32)
+        collection.add(ids=ids, documents=texts, embeddings=embeddings.tolist(), metadatas=metadatas)
+    else:
+        # chroma 模式：直接存 documents，ChromaDB 自动调用 ef 生成向量
+        collection.add(ids=ids, documents=texts, metadatas=metadatas)
 
     print(f"\n  ✅ 索引构建完成！向量库位置：{chroma_dir}")
     return embed_model, collection
@@ -241,13 +432,21 @@ def retrieve(query: str, embed_model, collection, top_k: int) -> list:
       0.70~0.85：相关，但可能需要结合其他片段
       < 0.60：相关性较低，可能是噪音
     """
-    query_vec = embed_model.encode([query]).tolist()
-
-    results = collection.query(
-        query_embeddings=query_vec,
-        n_results=top_k,
-        include=["documents", "metadatas", "distances"],
-    )
+    if embed_model is not None:
+        # sentence-transformers 模式：手动向量化问题
+        query_vec = embed_model.encode([query]).tolist()
+        results = collection.query(
+            query_embeddings=query_vec,
+            n_results=top_k,
+            include=["documents", "metadatas", "distances"],
+        )
+    else:
+        # chroma 模式：直接传文本，ChromaDB 内部自动向量化
+        results = collection.query(
+            query_texts=[query],
+            n_results=top_k,
+            include=["documents", "metadatas", "distances"],
+        )
 
     retrieved = []
     for i in range(len(results["documents"][0])):
@@ -311,8 +510,8 @@ def call_llm(prompt: str) -> str:
             response = ollama.chat(
                 model=OLLAMA_MODEL,
                 messages=[{"role": "user", "content": prompt}],
-                options={"num_ctx": 4096},   # 加这一行
-                think = False,
+                think=False,           # 关闭 Thinking 模式，RAG 场景不需要深度推理
+                options={"num_ctx": 4096},  # 限制 context 长度，避免不必要的性能开销
             )
             return response["message"]["content"]
         except ImportError:
@@ -347,6 +546,104 @@ def call_llm(prompt: str) -> str:
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  新增步骤：自我反思与查询重写
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def self_reflect_and_rewrite(query: str, contexts: list, threshold: float = 0.65) -> str:
+    """
+    反思逻辑：
+    1. 检查最高相似度是否低于阈值。
+    2. 如果太低，调用 LLM 重新生成一个更有利于检索的关键词。
+    """
+    max_sim = max([c['similarity'] for c in contexts]) if contexts else 0
+    
+    if max_sim >= threshold:
+        return None  # 足够相关，无需反思
+    
+    print(f"  ⚠️  反思中：最高相似度仅为 {max_sim:.2f}，低于阈值 {threshold}。")
+    print("  🔄  正在重写查询关键词以尝试优化检索...")
+
+    # 构建重写 Prompt
+    rewrite_prompt = f"""你是一个搜索优化助手。用户提出了一个问题，但在知识库中没搜到相关内容。
+请根据原始问题，提取或生成 2-3 个核心关键词，用空格分隔，以便更好地进行向量搜索。
+
+原始问题：{query}
+优化后的关键词："""
+
+    # 调用 LLM（复用之前的 call_llm）
+    new_query = call_llm(rewrite_prompt)
+    # 简单的清理逻辑
+    new_query = new_query.replace('"', '').replace("'", "").strip()
+    return new_query
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  修改后的主循环逻辑
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def retrieve_rag_with_reflection(query: str, embed_model, collection):
+    current_query = query
+    max_retries = 1  # 允许重试 1 次
+    attempt = 0
+    
+    while attempt <= max_retries:
+        print(f"\n  🔍 检索阶段 (尝试 {attempt + 1})：使用查询 '{current_query}'")
+        contexts = retrieve(current_query, embed_model, collection, TOP_K)
+        
+        # 展示检索结果（同你之前的代码）
+        for i, ctx in enumerate(contexts, 1):
+            print(f"  片段 {i} | 相似度: {ctx['similarity']:.3f} | 来源: {ctx['source']}")
+
+        # --- 自动反思触发 ---
+        # 如果是第一次尝试，且相似度不高，则重写
+        if attempt < max_retries:
+            rewritten_query = self_reflect_and_rewrite(query, contexts, threshold=0.68)
+            if rewritten_query:
+                current_query = rewritten_query
+                attempt += 1
+                continue # 进入下一次循环，重新检索
+        
+        # 如果相似度达标，或者已经重试过了，直接进入生成阶段
+        break
+
+    # 正常的生成流程
+    
+    return contexts
+
+
+
+def run_rag_with_reflection(query: str, embed_model, collection):
+    current_query = query
+    max_retries = 1  # 允许重试 1 次
+    attempt = 0
+    
+    while attempt <= max_retries:
+        print(f"\n  🔍 检索阶段 (尝试 {attempt + 1})：使用查询 '{current_query}'")
+        contexts = retrieve(current_query, embed_model, collection, TOP_K)
+        
+        # 展示检索结果（同你之前的代码）
+        for i, ctx in enumerate(contexts, 1):
+            print(f"  片段 {i} | 相似度: {ctx['similarity']:.3f} | 来源: {ctx['source']}")
+
+        # --- 自动反思触发 ---
+        # 如果是第一次尝试，且相似度不高，则重写
+        if attempt < max_retries:
+            rewritten_query = self_reflect_and_rewrite(query, contexts, threshold=0.68)
+            if rewritten_query:
+                current_query = rewritten_query
+                attempt += 1
+                continue # 进入下一次循环，重新检索
+        
+        # 如果相似度达标，或者已经重试过了，直接进入生成阶段
+        break
+
+    # 正常的生成流程
+    prompt = build_rag_prompt(query, contexts)
+    print(f"\n  💬 生成阶段...")
+    answer = call_llm(prompt)
+    return answer
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  主流程
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -367,6 +664,12 @@ def main():
     print_banner("步骤 1 / 3：加载知识库文档")
     print(f"\n  从目录加载文档：{DOCS_DIR}\n")
     docs = load_documents(DOCS_DIR)
+    for doc in docs:
+      if doc["filename"].endswith(".pdf"):
+          print("\n===== Docling 解析内容预览 =====")
+          print(doc["content"][:1000])
+          break
+      
     print(f"\n  共加载 {len(docs)} 份文档。")
     print("""
   💡 理解要点：
@@ -377,6 +680,12 @@ def main():
     # ── 步骤 2：文本切块 ───────────────────────────────────────────
     print_banner("步骤 2 / 3：文本切块（Chunking）")
     chunks = chunk_documents(docs, CHUNK_SIZE, CHUNK_OVERLAP)
+
+    pdf_chunks = [c for c in chunks if c["source"].endswith(".pdf")][:5]
+    for c in pdf_chunks:
+        print(f"\n--- chunk {c['chunk_index']} ---")
+        print(c["text"])
+
     print(f"""
   参数：chunk_size={CHUNK_SIZE} 字，overlap={CHUNK_OVERLAP} 字
   结果：{len(docs)} 份文档 → {len(chunks)} 个文本块
@@ -394,7 +703,7 @@ def main():
 
     # ── 步骤 3：向量化 + 建立索引 ─────────────────────────────────
     print_banner("步骤 3 / 3：向量化 + 建立索引（Embedding + ChromaDB）")
-    embed_model, collection = build_index(chunks, CHROMA_DIR, EMBEDDING_MODEL)
+    embed_model, collection = build_index(chunks, CHROMA_DIR)
     print("""
   💡 理解要点：
      每个文本块都被转成了一个"数字坐标"（高维向量）。
