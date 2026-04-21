@@ -1,9 +1,26 @@
-# RAG Demo 核心依赖（必须安装）
+# ── 核心依赖（必须安装）────────────────────────────────────────
 chromadb>=0.5.0
 sentence-transformers>=3.0.0
 
-# 可选：本地 LLM 后端（安装 Ollama 后使用）
-# ollama>=0.3.0
+# transformers 需锁定在 4.x，FlagEmbedding 与 transformers 5.x 尚不兼容
+transformers>=4.44.0,<5.0.0
 
-# 可选：OpenAI 兼容 API 后端
-# openai>=1.0.0
+# ── Web 界面（app.py 使用）─────────────────────────────────────
+streamlit>=1.35.0
+
+# ── PDF 解析（knowledge_base 中有 .pdf 文件时需要）─────────────
+docling>=2.0.0
+
+# ── 混合检索 Hybrid Search（HYBRID_SEARCH_ENABLED=True 时需要）─
+rank-bm25>=0.2.2
+jieba>=0.42.1
+
+# ── Re-ranking 精排（RERANKER_ENABLED=True 时需要）─────────────
+FlagEmbedding>=1.3.5
+
+# ── RAG 评估（rag_eval.py，无需额外安装，复用上方依赖）──────────
+# evaluate_all() 使用 call_llm() 作为 LLM-as-Judge，依赖已有的 LLM 后端配置
+
+# ── LLM 后端（按需安装其中一个）────────────────────────────────
+# ollama>=0.3.0        # LLM_BACKEND="ollama" 时安装
+# openai>=1.0.0        # LLM_BACKEND="openai" 时安装

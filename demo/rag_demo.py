@@ -93,6 +93,21 @@ RERANKER_MODEL = "BAAI/bge-reranker-v2-m3"
 # 粗排初次召回的候选数量（建议为 TOP_K 的 2~4 倍）
 RETRIEVE_CANDIDATES = 10
 
+# ── 混合检索配置 ─────────────────────────────────────────────────
+#
+# 是否启用混合检索（Dense Embedding + Sparse BM25）
+# True  → Dense 和 BM25 各自召回候选，通过 RRF 融合后再精排
+# False → 仅使用 Dense Embedding 检索（原始行为）
+#
+# 安装依赖：pip install rank-bm25 jieba
+#
+HYBRID_SEARCH_ENABLED = True
+
+# RRF（Reciprocal Rank Fusion）融合参数 k
+# 公式：score(d) = Σ 1/(k + rank_i(d))
+# k 越大结果越平滑，越小越偏重头部排名，推荐默认 60
+RRF_K = 60
+
 # ── LLM 后端配置 ────────────────────────────────────────────────
 #
 #  "none"   → 只展示检索到的文档片段，不调用 LLM【推荐初学者】
@@ -441,8 +456,49 @@ def build_index(chunks: list, chroma_dir: str):
         # chroma 模式：直接存 documents，ChromaDB 自动调用 ef 生成向量
         collection.add(ids=ids, documents=texts, metadatas=metadatas)
 
-    print(f"\n  ✅ 索引构建完成！向量库位置：{chroma_dir}")
-    return embed_model, collection
+    print(f"\n  ✅ 向量索引构建完成！向量库位置：{chroma_dir}")
+
+    # ── 构建 BM25 稀疏索引 ────────────────────────────────────────
+    bm25 = None
+    if HYBRID_SEARCH_ENABLED:
+        bm25 = build_bm25_index(chunks)
+
+    return embed_model, collection, bm25, chunks
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  步骤 3b：构建 BM25 稀疏索引
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def build_bm25_index(chunks: list):
+    """
+    基于 BM25 算法构建稀疏倒排索引。
+
+    【BM25 是什么？】
+    BM25（Best Match 25）是经典的信息检索算法，TF-IDF 的改进版。
+    它根据词频（TF）和逆文档频率（IDF）为每个 chunk 打分：
+    - TF：查询词在 chunk 中出现越多，分数越高
+    - IDF：查询词在所有 chunk 中越罕见（专有名词），权重越高
+
+    【为什么要配合 Embedding 使用？】
+    Embedding 擅长语义理解（"生日" ≈ "出生纪念日"）
+    BM25 擅长精确匹配（"DLPC3437"、"bge-m3" 等型号/专有名词）
+    两者互补，通过混合检索覆盖两类场景。
+    """
+    try:
+        import jieba
+        from rank_bm25 import BM25Okapi
+    except ImportError:
+        print("\n  ❌ 混合检索需要安装依赖：pip install rank-bm25 jieba")
+        print("     或关闭混合检索：HYBRID_SEARCH_ENABLED = False")
+        sys.exit(1)
+
+    print("\n  正在构建 BM25 稀疏索引...")
+    # 使用 jieba 对每个 chunk 做中文分词，构建词袋
+    tokenized = [list(jieba.cut(c["text"])) for c in chunks]
+    bm25 = BM25Okapi(tokenized)
+    print(f"  ✅ BM25 索引构建完成！共 {len(chunks)} 个文本块")
+    return bm25
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -480,6 +536,7 @@ def retrieve(query: str, embed_model, collection, top_k: int) -> list:
         # ChromaDB 返回的是"距离"，余弦距离转换为相似度：similarity = 1 - distance
         similarity = 1 - results["distances"][0][i]
         retrieved.append({
+            "id": results["ids"][0][i],
             "text": results["documents"][0][i],
             "source": results["metadatas"][0][i]["source"],
             "chunk_index": results["metadatas"][0][i]["chunk_index"],
@@ -487,6 +544,87 @@ def retrieve(query: str, embed_model, collection, top_k: int) -> list:
         })
 
     return retrieved
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  步骤 4a-1b：稀疏检索 + 混合融合（Hybrid Search）
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def sparse_retrieve(query: str, bm25, chunks: list, top_k: int) -> list:
+    """
+    BM25 关键词检索，返回与 retrieve() 格式兼容的结果列表。
+    """
+    import jieba
+    tokens = list(jieba.cut(query))
+    scores = bm25.get_scores(tokens)
+
+    top_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:top_k]
+    return [
+        {
+            "id": chunks[i]["id"],
+            "text": chunks[i]["text"],
+            "source": chunks[i]["source"],
+            "chunk_index": chunks[i]["chunk_index"],
+            "similarity": 0.0,       # BM25 无向量相似度，占位为 0
+            "bm25_score": float(scores[i]),
+        }
+        for i in top_indices
+        if scores[i] > 0  # 过滤掉完全无关的（BM25 分数为 0）
+    ]
+
+
+def hybrid_retrieve(query: str, embed_model, collection, bm25, chunks: list, top_k: int) -> list:
+    """
+    混合检索：Dense Embedding + Sparse BM25 → RRF 融合。
+
+    【RRF 是什么？】
+    Reciprocal Rank Fusion（倒数排名融合）：
+      score(d) = Σ 1 / (k + rank_i(d))
+
+    不依赖原始分数（Embedding 余弦值 vs BM25 分数量纲不同），
+    只依赖排名，天然解决了两种检索结果分数无法直接相加的问题。
+
+    例：某 chunk 在 Dense 排第 2、在 BM25 排第 1：
+      RRF = 1/(60+2) + 1/(60+1) = 0.0161 + 0.0164 = 0.0325
+    """
+    # ── ① Dense 检索 ─────────────────────────────────────────────
+    dense_results = retrieve(query, embed_model, collection, top_k)
+    print(f"    [Dense Embedding] 召回 {len(dense_results)} 个：")
+    for i, item in enumerate(dense_results, 1):
+        print(f"      {i}. 相似度={item['similarity']:.3f}  {item['source']}")
+
+    # ── ② BM25 稀疏检索 ──────────────────────────────────────────
+    sparse_results = sparse_retrieve(query, bm25, chunks, top_k)
+    print(f"    [BM25 Sparse]     召回 {len(sparse_results)} 个：")
+    for i, item in enumerate(sparse_results, 1):
+        print(f"      {i}. BM25={item['bm25_score']:.3f}  {item['source']}")
+
+    # ── ③ RRF 融合 ───────────────────────────────────────────────
+    rrf_scores = {}
+    all_items  = {}
+
+    for rank, item in enumerate(dense_results):
+        cid = item["id"]
+        rrf_scores[cid] = rrf_scores.get(cid, 0) + 1 / (RRF_K + rank + 1)
+        all_items[cid]  = item
+
+    for rank, item in enumerate(sparse_results):
+        cid = item["id"]
+        rrf_scores[cid] = rrf_scores.get(cid, 0) + 1 / (RRF_K + rank + 1)
+        if cid not in all_items:
+            all_items[cid] = item  # 仅 BM25 召回、Dense 未召回的 chunk
+
+    sorted_ids = sorted(rrf_scores, key=lambda x: rrf_scores[x], reverse=True)[:top_k]
+
+    results = []
+    for cid in sorted_ids:
+        item = all_items[cid]
+        item["rrf_score"] = round(rrf_scores[cid], 6)
+        results.append(item)
+
+    print(f"    [RRF 融合]        合并后取前 {len(results)} 个（去重后共 {len(rrf_scores)} 个候选）")
+
+    return results
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -662,21 +800,25 @@ def self_reflect_and_rewrite(query: str, contexts: list, threshold: float = 0.65
 #  修改后的主循环逻辑
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-def retrieve_rag_with_reflection(query: str, embed_model, collection):
+def retrieve_rag_with_reflection(query: str, embed_model, collection, bm25=None, chunks=None):
     current_query = query
-    max_retries = 1  # 允许重试 1 次
+    max_retries = 1
     attempt = 0
     retrieve_n = RETRIEVE_CANDIDATES if RERANKER_ENABLED else TOP_K
 
     while attempt <= max_retries:
         print(f"\n  🔍 检索阶段 (尝试 {attempt + 1})：使用查询 '{current_query}'")
-        candidates = retrieve(current_query, embed_model, collection, retrieve_n)
 
-        # 展示检索结果
-        for i, ctx in enumerate(candidates, 1):
-            print(f"  片段 {i} | 相似度: {ctx['similarity']:.3f} | 来源: {ctx['source']}")
+        if HYBRID_SEARCH_ENABLED and bm25 is not None and chunks is not None:
+            candidates = hybrid_retrieve(current_query, embed_model, collection, bm25, chunks, retrieve_n)
+            for i, ctx in enumerate(candidates, 1):
+                rrf_str = f"RRF: {ctx['rrf_score']:.4f} | " if "rrf_score" in ctx else ""
+                print(f"  片段 {i} | {rrf_str}Embedding: {ctx['similarity']:.3f} | 来源: {ctx['source']}")
+        else:
+            candidates = retrieve(current_query, embed_model, collection, retrieve_n)
+            for i, ctx in enumerate(candidates, 1):
+                print(f"  片段 {i} | 相似度: {ctx['similarity']:.3f} | 来源: {ctx['source']}")
 
-        # --- 自动反思触发（基于 Embedding 相似度判断） ---
         if attempt < max_retries:
             rewritten_query = self_reflect_and_rewrite(query, candidates, threshold=0.45)
             if rewritten_query:
@@ -699,21 +841,25 @@ def retrieve_rag_with_reflection(query: str, embed_model, collection):
 
 
 
-def run_rag_with_reflection(query: str, embed_model, collection):
+def run_rag_with_reflection(query: str, embed_model, collection, bm25=None, chunks=None):
     current_query = query
-    max_retries = 1  # 允许重试 1 次
+    max_retries = 1
     attempt = 0
     retrieve_n = RETRIEVE_CANDIDATES if RERANKER_ENABLED else TOP_K
 
     while attempt <= max_retries:
         print(f"\n  🔍 检索阶段 (尝试 {attempt + 1})：使用查询 '{current_query}'")
-        candidates = retrieve(current_query, embed_model, collection, retrieve_n)
 
-        # 展示检索结果
-        for i, ctx in enumerate(candidates, 1):
-            print(f"  片段 {i} | 相似度: {ctx['similarity']:.3f} | 来源: {ctx['source']}")
+        if HYBRID_SEARCH_ENABLED and bm25 is not None and chunks is not None:
+            candidates = hybrid_retrieve(current_query, embed_model, collection, bm25, chunks, retrieve_n)
+            for i, ctx in enumerate(candidates, 1):
+                rrf_str = f"RRF: {ctx['rrf_score']:.4f} | " if "rrf_score" in ctx else ""
+                print(f"  片段 {i} | {rrf_str}Embedding: {ctx['similarity']:.3f} | 来源: {ctx['source']}")
+        else:
+            candidates = retrieve(current_query, embed_model, collection, retrieve_n)
+            for i, ctx in enumerate(candidates, 1):
+                print(f"  片段 {i} | 相似度: {ctx['similarity']:.3f} | 来源: {ctx['source']}")
 
-        # --- 自动反思触发（基于 Embedding 相似度判断） ---
         if attempt < max_retries:
             rewritten_query = self_reflect_and_rewrite(query, candidates, threshold=0.45)
             if rewritten_query:
@@ -728,7 +874,6 @@ def run_rag_with_reflection(query: str, embed_model, collection):
     else:
         contexts = candidates
 
-    # 正常的生成流程
     prompt = build_rag_prompt(query, contexts)
     print(f"\n  💬 生成阶段...")
     answer = call_llm(prompt)
@@ -795,7 +940,7 @@ def main():
 
     # ── 步骤 3：向量化 + 建立索引 ─────────────────────────────────
     print_banner("步骤 3 / 3：向量化 + 建立索引（Embedding + ChromaDB）")
-    embed_model, collection = build_index(chunks, CHROMA_DIR)
+    embed_model, collection, bm25, chunks = build_index(chunks, CHROMA_DIR)
     print("""
   💡 理解要点：
      每个文本块都被转成了一个"数字坐标"（高维向量）。
@@ -841,9 +986,13 @@ def main():
         print("  🔍 检索阶段（Retrieval）")
         print(f"  {'─' * 58}")
         retrieve_n = RETRIEVE_CANDIDATES if RERANKER_ENABLED else TOP_K
-        print(f"  将问题转成向量，在 {collection.count()} 个文本块中搜索最相似的 {retrieve_n} 个...\n")
+        search_mode = "混合检索（Dense + BM25）" if HYBRID_SEARCH_ENABLED else "向量检索（Dense）"
+        print(f"  模式：{search_mode}，在 {collection.count()} 个文本块中召回 {retrieve_n} 个候选...\n")
 
-        candidates = retrieve(query, embed_model, collection, retrieve_n)
+        if HYBRID_SEARCH_ENABLED and bm25 is not None:
+            candidates = hybrid_retrieve(query, embed_model, collection, bm25, chunks, retrieve_n)
+        else:
+            candidates = retrieve(query, embed_model, collection, retrieve_n)
 
         if RERANKER_ENABLED:
             print(f"  {'─' * 58}")
@@ -856,9 +1005,10 @@ def main():
         for i, ctx in enumerate(contexts, 1):
             bar_len = int(ctx["similarity"] * 20)
             bar = "█" * bar_len + "░" * (20 - bar_len)
-            embed_str = f"Embedding {ctx['similarity']:.3f}"
+            rrf_str    = f"RRF {ctx['rrf_score']:.4f}  " if "rrf_score" in ctx else ""
+            embed_str  = f"Embedding {ctx['similarity']:.3f}"
             rerank_str = f"  Rerank {ctx['rerank_score']:.3f}" if "rerank_score" in ctx else ""
-            print(f"  片段 {i}  [{bar}] {embed_str}{rerank_str}")
+            print(f"  片段 {i}  [{bar}] {rrf_str}{embed_str}{rerank_str}")
             print(f"  来源：{ctx['source']}")
             preview = ctx["text"][:180].replace("\n", " ")
             print(f"  内容：{preview}{'...' if len(ctx['text']) > 180 else ''}")
