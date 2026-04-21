@@ -4,9 +4,10 @@ import streamlit as st
 
 sys.path.insert(0, str(Path(__file__).parent))
 from rag_demo import (
-    DOCS_DIR, CHROMA_DIR, TOP_K,
+    DOCS_DIR, CHROMA_DIR, TOP_K, RERANKER_ENABLED,
     load_documents, chunk_documents, build_index,
-    retrieve, build_rag_prompt, call_llm, retrieve_rag_with_reflection, run_rag_with_reflection,
+    retrieve, rerank, build_rag_prompt, call_llm,
+    retrieve_rag_with_reflection, run_rag_with_reflection,
 )
 
 st.set_page_config(page_title="RAG 知识库问答", layout="wide")
@@ -70,7 +71,11 @@ if query:
         results = retrieve_rag_with_reflection(query, embed_model,collection)
        
         for i, r in enumerate(results):
-            with st.expander(f"片段 {i+1}（相似度: {r['similarity']:.3f}）"):
+            if RERANKER_ENABLED and "rerank_score" in r:
+                score_label = f"Rerank: {r['rerank_score']:.3f}  Embedding: {r['similarity']:.3f}"
+            else:
+                score_label = f"相似度: {r['similarity']:.3f}"
+            with st.expander(f"片段 {i+1}（{score_label}）"):
                 st.write(r["text"])
                 st.caption(f"来源：{r['source']}")
 

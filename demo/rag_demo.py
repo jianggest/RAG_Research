@@ -37,7 +37,15 @@
 
 import os
 import sys
+import warnings
 from pathlib import Path
+
+# 屏蔽 transformers 懒加载模块时产生的 __path__ 别名警告（纯噪音，不影响功能）
+warnings.filterwarnings("ignore", message="Accessing `__path__`")
+
+# 屏蔽 transformers 内部的 INFO 级日志（tokenizer 提示等）
+import transformers
+transformers.logging.set_verbosity_error()
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  配置区（可根据需要修改）
@@ -63,8 +71,27 @@ EMBEDDING_MODEL = "paraphrase-multilingual-MiniLM-L12-v2"
 CHUNK_SIZE = 300    # 每个 chunk 的最大字符数
 CHUNK_OVERLAP = 50  # 相邻 chunk 的重叠字符数（避免边界信息丢失）
 
-# 检索返回的 Top-K 片段数
+# 检索返回的 Top-K 片段数（Re-ranking 开启时，这是精排后最终保留的数量）
 TOP_K = 5
+
+# ── Re-ranking 配置 ─────────────────────────────────────────────
+#
+# 是否启用 Re-ranking（Cross-Encoder 精排）
+# True  → 先用 Embedding 召回 RETRIEVE_CANDIDATES 个候选，再精排取 TOP_K
+# False → 直接使用 Embedding 检索结果（原始行为）
+#
+# 安装依赖：pip install FlagEmbedding
+#
+RERANKER_ENABLED = True
+
+# Re-ranking 使用的 Cross-Encoder 模型：
+#   "BAAI/bge-reranker-base"    → 约 278MB，中英文，轻量
+#   "BAAI/bge-reranker-large"   → 约 560MB，效果更好
+#   "BAAI/bge-reranker-v2-m3"   → 约 568MB，多语言最佳【推荐】
+RERANKER_MODEL = "BAAI/bge-reranker-v2-m3"
+
+# 粗排初次召回的候选数量（建议为 TOP_K 的 2~4 倍）
+RETRIEVE_CANDIDATES = 10
 
 # ── LLM 后端配置 ────────────────────────────────────────────────
 #
@@ -463,6 +490,61 @@ def retrieve(query: str, embed_model, collection, top_k: int) -> list:
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  步骤 4a-2：Re-ranking（Cross-Encoder 精排）
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+_reranker_instance = None  # 模块级缓存，避免每次问答都重新加载模型
+
+
+def rerank(query: str, candidates: list, top_n: int) -> list:
+    """
+    用 Cross-Encoder 对 Embedding 召回的候选片段进行精排。
+
+    【与 Embedding 相似度的本质区别】
+    Embedding 粗排：query 和 passage 分别独立编码 → 计算余弦相似度
+                   缺点：编码时互相"不认识"，上下文交互不足
+    Cross-Encoder：将 [query, passage] 拼接后一起输入模型
+                  优点：完整注意力机制，每个 token 都能看到对方，精度更高
+                  缺点：无法预计算，速度慢，只适合对少量候选精排
+
+    【返回值】
+    重排后的列表（前 top_n 个），每个元素新增 rerank_score 字段（0~1）。
+    """
+    global _reranker_instance
+
+    if not candidates:
+        return candidates
+
+    try:
+        from FlagEmbedding import FlagReranker
+    except Exception as e:
+        print(f"\n  ❌ Re-ranking 加载失败：{type(e).__name__}: {e}")
+        print("     跳过精排，使用 Embedding 排序结果。")
+        return candidates[:top_n]
+
+    # 懒加载：首次调用时才加载模型（避免每次问答重载）
+    if _reranker_instance is None:
+        print(f"\n  正在加载 Re-ranking 模型：{RERANKER_MODEL}")
+        print("  （首次运行需下载模型，约 300~600MB）")
+        _reranker_instance = FlagReranker(RERANKER_MODEL, use_fp16=True)
+        print("  ✅ Re-ranking 模型加载完成\n")
+
+    # Cross-Encoder 打分：每个候选都与 query 组成 pair
+    pairs = [[query, c["text"]] for c in candidates]
+    scores = _reranker_instance.compute_score(pairs, normalize=True)  # normalize=True → 分数归一化到 0~1
+
+    if not isinstance(scores, list):
+        scores = [float(scores)]
+
+    for ctx, score in zip(candidates, scores):
+        ctx["rerank_score"] = float(score)
+
+    # 按 rerank_score 降序精排，取前 top_n
+    reranked = sorted(candidates, key=lambda x: x["rerank_score"], reverse=True)
+    return reranked[:top_n]
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  步骤 4b：构建 Prompt + 调用 LLM 生成答案
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -565,7 +647,7 @@ def self_reflect_and_rewrite(query: str, contexts: list, threshold: float = 0.65
 
     # 构建重写 Prompt
     rewrite_prompt = f"""你是一个搜索优化助手。用户提出了一个问题，但在知识库中没搜到相关内容。
-请根据原始问题，提取或生成 2-3 个核心关键词，用空格分隔，以便更好地进行向量搜索。
+请根据原始问题，提取或生成 2-3 个核心关键词，用空格分隔，或者给出这个问题相似的表达，以便更好地进行向量搜索。
 
 原始问题：{query}
 优化后的关键词："""
@@ -584,29 +666,35 @@ def retrieve_rag_with_reflection(query: str, embed_model, collection):
     current_query = query
     max_retries = 1  # 允许重试 1 次
     attempt = 0
-    
+    retrieve_n = RETRIEVE_CANDIDATES if RERANKER_ENABLED else TOP_K
+
     while attempt <= max_retries:
         print(f"\n  🔍 检索阶段 (尝试 {attempt + 1})：使用查询 '{current_query}'")
-        contexts = retrieve(current_query, embed_model, collection, TOP_K)
-        
-        # 展示检索结果（同你之前的代码）
-        for i, ctx in enumerate(contexts, 1):
+        candidates = retrieve(current_query, embed_model, collection, retrieve_n)
+
+        # 展示检索结果
+        for i, ctx in enumerate(candidates, 1):
             print(f"  片段 {i} | 相似度: {ctx['similarity']:.3f} | 来源: {ctx['source']}")
 
-        # --- 自动反思触发 ---
-        # 如果是第一次尝试，且相似度不高，则重写
+        # --- 自动反思触发（基于 Embedding 相似度判断） ---
         if attempt < max_retries:
-            rewritten_query = self_reflect_and_rewrite(query, contexts, threshold=0.68)
+            rewritten_query = self_reflect_and_rewrite(query, candidates, threshold=0.45)
             if rewritten_query:
                 current_query = rewritten_query
                 attempt += 1
-                continue # 进入下一次循环，重新检索
-        
-        # 如果相似度达标，或者已经重试过了，直接进入生成阶段
+                continue
         break
 
-    # 正常的生成流程
-    
+    # Re-ranking 精排
+    if RERANKER_ENABLED:
+        print(f"\n  🔀 Re-ranking：对 {len(candidates)} 个候选精排，保留 {TOP_K} 个")
+        contexts = rerank(current_query, candidates, TOP_K)
+        print("  精排结果：")
+        for i, ctx in enumerate(contexts, 1):
+            print(f"  片段 {i} | Rerank: {ctx['rerank_score']:.3f} | Embedding: {ctx['similarity']:.3f} | 来源: {ctx['source']}")
+    else:
+        contexts = candidates
+
     return contexts
 
 
@@ -615,26 +703,30 @@ def run_rag_with_reflection(query: str, embed_model, collection):
     current_query = query
     max_retries = 1  # 允许重试 1 次
     attempt = 0
-    
+    retrieve_n = RETRIEVE_CANDIDATES if RERANKER_ENABLED else TOP_K
+
     while attempt <= max_retries:
         print(f"\n  🔍 检索阶段 (尝试 {attempt + 1})：使用查询 '{current_query}'")
-        contexts = retrieve(current_query, embed_model, collection, TOP_K)
-        
-        # 展示检索结果（同你之前的代码）
-        for i, ctx in enumerate(contexts, 1):
+        candidates = retrieve(current_query, embed_model, collection, retrieve_n)
+
+        # 展示检索结果
+        for i, ctx in enumerate(candidates, 1):
             print(f"  片段 {i} | 相似度: {ctx['similarity']:.3f} | 来源: {ctx['source']}")
 
-        # --- 自动反思触发 ---
-        # 如果是第一次尝试，且相似度不高，则重写
+        # --- 自动反思触发（基于 Embedding 相似度判断） ---
         if attempt < max_retries:
-            rewritten_query = self_reflect_and_rewrite(query, contexts, threshold=0.68)
+            rewritten_query = self_reflect_and_rewrite(query, candidates, threshold=0.45)
             if rewritten_query:
                 current_query = rewritten_query
                 attempt += 1
-                continue # 进入下一次循环，重新检索
-        
-        # 如果相似度达标，或者已经重试过了，直接进入生成阶段
+                continue
         break
+
+    # Re-ranking 精排
+    if RERANKER_ENABLED:
+        contexts = rerank(current_query, candidates, TOP_K)
+    else:
+        contexts = candidates
 
     # 正常的生成流程
     prompt = build_rag_prompt(query, contexts)
@@ -748,14 +840,25 @@ def main():
         print(f"\n  {'─' * 58}")
         print("  🔍 检索阶段（Retrieval）")
         print(f"  {'─' * 58}")
-        print(f"  将问题转成向量，在 {collection.count()} 个文本块中搜索最相似的 {TOP_K} 个...\n")
+        retrieve_n = RETRIEVE_CANDIDATES if RERANKER_ENABLED else TOP_K
+        print(f"  将问题转成向量，在 {collection.count()} 个文本块中搜索最相似的 {retrieve_n} 个...\n")
 
-        contexts = retrieve(query, embed_model, collection, TOP_K)
+        candidates = retrieve(query, embed_model, collection, retrieve_n)
+
+        if RERANKER_ENABLED:
+            print(f"  {'─' * 58}")
+            print(f"  🔀 Re-ranking 阶段：对 {len(candidates)} 个候选精排，保留 {TOP_K} 个")
+            print(f"  {'─' * 58}")
+            contexts = rerank(query, candidates, TOP_K)
+        else:
+            contexts = candidates
 
         for i, ctx in enumerate(contexts, 1):
             bar_len = int(ctx["similarity"] * 20)
             bar = "█" * bar_len + "░" * (20 - bar_len)
-            print(f"  片段 {i}  相似度 [{bar}] {ctx['similarity']:.3f}")
+            embed_str = f"Embedding {ctx['similarity']:.3f}"
+            rerank_str = f"  Rerank {ctx['rerank_score']:.3f}" if "rerank_score" in ctx else ""
+            print(f"  片段 {i}  [{bar}] {embed_str}{rerank_str}")
             print(f"  来源：{ctx['source']}")
             preview = ctx["text"][:180].replace("\n", " ")
             print(f"  内容：{preview}{'...' if len(ctx['text']) > 180 else ''}")
