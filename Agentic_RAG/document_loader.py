@@ -3,9 +3,10 @@
 
 职责：
   1. 扫描 knowledge_base/，将 PDF 通过 Docling 转换为同名 .md（已存在则跳过）
-  2. 读取 .md 文件，使用表格感知分块
-  3. 读取 .txt 文件，使用滑动窗口分块
-  4. 返回统一格式的 chunk 列表
+  2. 对 .md 文件调用清洗器，生成 _clean.md（已存在则跳过）
+  3. 读取 .md 文件（优先加载 _clean.md，不存在时回退原文件），使用表格感知分块
+  4. 读取 .txt 文件，使用滑动窗口分块
+  5. 返回统一格式的 chunk 列表
 
 对外接口：
   load_documents(kb_dir) -> list[Chunk]
@@ -213,17 +214,28 @@ def chunk_text(content: str, source: str, max_size: int = CHUNK_SIZE, overlap: i
 def load_documents(kb_dir: Path) -> list[Chunk]:
     """
     加载 kb_dir 下所有文档，返回 chunk 列表。
-    执行顺序：PDF 转换 → .md 分块 → .txt 分块
+    执行顺序：PDF 转换 → 文档清洗 → .md 分块 → .txt 分块
     """
+    from doc_cleaner import clean_documents
+
     convert_pdfs(kb_dir)
+    clean_documents(kb_dir)
 
     all_chunks: list[Chunk] = []
 
     for md_file in sorted(kb_dir.glob("*.md")):
-        content = md_file.read_text(encoding="utf-8")
-        file_chunks = chunk_markdown(content, md_file.name)
+        # 跳过 _clean.md 本身，由原文件查找逻辑统一处理
+        if md_file.stem.endswith("_clean"):
+            continue
+        # 优先加载 _clean.md，不存在时回退到原文件
+        clean_file = md_file.with_name(f"{md_file.stem}_clean.md")
+        target = clean_file if clean_file.exists() else md_file
+        label = target.name
+
+        content = target.read_text(encoding="utf-8")
+        file_chunks = chunk_markdown(content, label)
         all_chunks.extend(file_chunks)
-        print(f"[Loader] {md_file.name} → {len(file_chunks)} chunks")
+        print(f"[Loader] {label} → {len(file_chunks)} chunks")
 
     for txt_file in sorted(kb_dir.glob("*.txt")):
         content = txt_file.read_text(encoding="utf-8")

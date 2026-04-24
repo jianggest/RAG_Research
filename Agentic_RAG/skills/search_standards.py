@@ -10,5 +10,5 @@ SKILL_META = {
 }
 
 
-def execute(query: str, retriever) -> list[dict]:
+def execute(query: str, retriever, query_structure: dict = None) -> list[dict]:
     return retriever.search(query, method="vector", top_k=5)

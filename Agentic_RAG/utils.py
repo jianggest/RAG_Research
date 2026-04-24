@@ -67,6 +67,41 @@ def clean_table_text(table_text: str) -> str:
     return " ".join(cells)[:300]
 
 
+def llm_classify_overseas(entity_query: str) -> str:
+    """
+    判断境外实体属于哪个境外费用类别。
+
+    境外分类规则（固定，无需检索）：
+      A类：欧洲/美国/日本/新加坡
+      B类：其他国家/地区
+      C类：港澳台（由 scope=china 直接确定，不走此函数）
+
+    Returns:
+        "A类" | "B类"；无法判断时返回空字符串
+    """
+    prompt = f"""\
+根据以下境外出差费用分类规则，判断问题中涉及的国家/地区属于哪个类别。
+只输出类别名称本身（如"A类"、"B类"），不要其他解释。
+
+境外分类规则：
+- A类：欧洲各国、美国、日本、新加坡
+- B类：其他国家/地区
+
+注意：如果无法判断，输出"B类"作为保守默认值。
+
+问题：{entity_query}
+
+该国家/地区的境外类别是："""
+
+    from llm import call_llm
+    result = call_llm(prompt).strip()
+
+    if not result or len(result) > 20:
+        return "B类"  # 境外未知国家默认B类
+
+    return result
+
+
 def llm_classify(chunks: list, entity_query: str) -> str:
     """
     调用 LLM 从检索结果中推断实体所属分类。

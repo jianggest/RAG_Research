@@ -14,5 +14,5 @@ TOP_K = 5
 
 # LLM
 LLM_BACKEND = "ollama"   # "ollama" | "none"
-OLLAMA_MODEL = "gemma4"  # "qwen3.6:35b-a3b-q4_K_M"
+OLLAMA_MODEL =  "qwen3.6:35b-a3b-q4_K_M" #"gemma4"  #
 OLLAMA_OPTIONS = {"num_ctx": 4096}

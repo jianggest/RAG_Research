@@ -41,8 +41,12 @@ _PARSE_PROMPT = """\
 
 【维度说明】
 - Who（询问主体）：查询适用于谁，如职级/身份/部门
-- Where（地点/范围）：涉及的地区或城市
-- What（事项）：具体想查询的内容，如费用项、流程、政策
+- Where（地点/范围）：涉及的地区或城市，同时判断 scope：
+    - "mainland"：中国大陆城市/省份（如深圳、揭阳、广州、四川）
+    - "china"：港澳台地区（香港、澳门、台湾）
+    - "overseas"：境外国家/地区（如美国、日本、德国、欧洲）
+    - "unknown"：无法判断或 where 为 null
+- What（事项）：具体想查询的内容，如费用项、流程、政策、具体的费用数额、包含的相关费用等
 
 【intent_granularity 判断规则】
 - "总结性"：用户想概括了解，如"简单说说出差流程"、"介绍一下报销政策"
@@ -63,7 +67,7 @@ _PARSE_PROMPT = """\
   "expanded": "补全缺失维度后的完整语义描述",
   "dimensions": {{
     "who":   {{"value": "识别值或null", "inferred": false}},
-    "where": {{"value": "识别值或null", "inferred": false}},
+    "where": {{"value": "识别值或null", "inferred": false, "scope": "mainland|china|overseas|unknown"}},
     "what":  {{"value": "识别值或null", "inferred": false}}
   }},
   "entities": [
@@ -96,8 +100,9 @@ def parse_query(question: str) -> QueryStructure:
     raw = call_llm(prompt)
 
     structure = _parse_llm_response(raw, question)
+    where_dim = structure['dimensions']['where']
     print(f"[QueryUnderstanding] 维度: who={structure['dimensions']['who']['value']} "
-          f"where={structure['dimensions']['where']['value']} "
+          f"where={where_dim['value']} (scope={where_dim.get('scope','unknown')}) "
           f"what={structure['dimensions']['what']['value']}")
     if structure["missing"]:
         print(f"[QueryUnderstanding] 缺失维度: {structure['missing']}")
@@ -150,14 +155,20 @@ def _parse_llm_response(raw: str, original_question: str) -> QueryStructure:
 def _normalize(data: dict, original_question: str) -> QueryStructure:
     """确保所有字段存在且类型正确，填充缺省值。"""
     default_dim = {"value": None, "inferred": False}
+    default_where = {"value": None, "inferred": False, "scope": "unknown"}
     dimensions = data.get("dimensions", {})
+
+    # 确保 where 维度包含 scope 字段
+    where_dim = dimensions.get("where", default_where)
+    if "scope" not in where_dim:
+        where_dim = {**where_dim, "scope": "unknown"}
 
     return QueryStructure(
         original=data.get("original", original_question),
         expanded=data.get("expanded", original_question),
         dimensions={
             "who":   dimensions.get("who",   default_dim),
-            "where": dimensions.get("where", default_dim),
+            "where": where_dim,
             "what":  dimensions.get("what",  default_dim),
         },
         entities=data.get("entities", []),
@@ -176,7 +187,7 @@ def _fallback_structure(question: str) -> QueryStructure:
         expanded=question,
         dimensions={
             "who":   {"value": None, "inferred": False},
-            "where": {"value": None, "inferred": False},
+            "where": {"value": None, "inferred": False, "scope": "unknown"},
             "what":  {"value": None, "inferred": False},
         },
         entities=[],

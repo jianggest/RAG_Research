@@ -7,58 +7,95 @@ Skill：search_expense_reimbursement（复合 Skill）
   分类推断必须在 Executor 阶段完成，不能依赖 Generator 推断。
   原因：Generator 推断出分类后已无法再发起检索，拿不到对应分类的费用标准数据。
 
-  检索链：
+  检索链（根据 scope 分三条路径）：
+
+  [境内 scope=mainland/unknown]
   - Step 1：BM25 找含实体名的分类规则 chunk（深圳等显式实体命中）
   - Step 2：BM25 无结果时，向量检索补充分类规则（揭阳等隐式实体兜底）
-  - Step 3：LLM 读分类规则，推断实体所属类别（如"C类"）
-    - 深圳：BM25 命中 → LLM 得出"A类"
-    - 揭阳：BM25 未命中 → 向量拉回完整规则 → LLM 推断"C类"
-  - Step 4：以"分类 + 原始 query"为查询词，向量检索对应费用标准（多取 top_k=8）
-  - Step 5：表格优先重排（Structural Bias）
-    - is_table=True 的 chunk 分值 × 1.5，重新排序
-    - 财务标准 90% 在表格里，防止语义相近的说明段（如"业务招待标准"）排在费用表前面
+  - Step 3：LLM 读境内规则，推断 A/B/C 类
+  - Step 4+：向量检索境内费用标准
+
+  [港澳台 scope=china]
+  - 直接定为境外C类，跳过分类检索
+  - 向量检索"境外 C类 港澳台"费用标准
+
+  [境外国家 scope=overseas]
+  - LLM 直接判断：欧美日新 → 境外A类，其他 → 境外B类
+  - 向量检索"境外 X类"费用标准
+
+  [通用后处理]
+  - Step N-1：表格优先重排（Structural Bias），is_table=True 的 chunk 分值 × 1.5
+  - Step N：反思自检，询问金额但无数值时强制切换表格探测模式
 """
 
-from utils import llm_classify
+from utils import llm_classify, llm_classify_overseas
 
 SKILL_META = {
     "name": "search_expense_reimbursement",
-    "description": "当 query 涉及【差旅费用】【报销标准】【出差补贴】等财务报销类事项时调用，优先查询具体地区的出差费用限额、补贴金额等数值标准",
+    "description": "当 query 涉及【差旅费用】【报销标准】【出差补贴】等财务报销类事项时调用，优先查询具体地区的差旅报销标准，差旅费用限额、补贴金额等数值标准相关的表格信息。",
     "retrieval_method": "composite",
 }
 
 
 def execute(query: str, retriever, query_structure: dict = None) -> list[dict]:
-    # Step 1：BM25 精确匹配，找含实体名的分类规则 chunk
-    classification_chunks = retriever.search(query, method="bm25", top_k=10)
-    print(f"[search_expense_reimbursement] BM25 分类检索返回 {len(classification_chunks)} 条")
+    scope = (
+        (query_structure or {})
+        .get("dimensions", {})
+        .get("where", {})
+        .get("scope", "unknown")
+    )
+    where_dim = (query_structure or {}).get("dimensions", {}).get("where", {})
+    where_value = where_dim.get("value")
+    what = (
+        (query_structure or {})
+        .get("dimensions", {})
+        .get("what", {})
+        .get("value")
+    )
+    print(f"[search_expense_reimbursement] scope={scope}")
 
-    # Step 2：BM25 无结果时，向量检索补充分类规则
-    # 揭阳等隐式实体不在显式列表中，BM25 找不到，但向量检索能拉回"C类：其他"兜底规则
-    if not classification_chunks:
-        classification_chunks = retriever.search(query, method="vector", top_k=5)
-        print(f"[search_expense_reimbursement] BM25 无结果，向量补充分类规则 {len(classification_chunks)} 条")
+    # ── 港澳台：直接定为境外C类，无需分类检索 ────────────────────────────────
+    if scope == "china":
+        category = "C类"
+        classification_chunks = []
+        print(f"[search_expense_reimbursement] 港澳台 → 境外C类（直接确定）")
+        # 保留地名（香港/澳门/台湾），因为它出现在表格列头里
+        where_part = where_value or "港澳台"
+        standards_query = f"境外 C类 {where_part} {what}" if what else f"境外 C类 {where_part} {query}"
 
-    # Step 3：LLM 读分类规则，推断实体所属类别
-    # 此步必须在 Executor 阶段完成：Generator 推断出分类后已无法再发起检索
-    category = llm_classify(classification_chunks, query)
+    # ── 境外国家：LLM判断欧美日新(A类) 或 其他(B类) ──────────────────────────
+    elif scope == "overseas":
+        category = llm_classify_overseas(query)
+        classification_chunks = []
+        print(f"[search_expense_reimbursement] 境外国家 → LLM推断境外分类：{category}")
+        # 保留国家名（美国/日本等），因为它出现在表格列头"A类：欧洲/美国/日本/新加坡"里
+        where_part = where_value or ""
+        standards_query = f"境外 {category} {where_part} {what}".strip() if what else f"境外 {category} {where_part} {query}".strip()
 
-    if category:
-        print(f"[search_expense_reimbursement] LLM 推断分类：{category}")
-        # 用 what 维度替换 query，避免已解析的城市名污染标准查询词
-        # 逻辑：where（深圳）→ 已解析为 category（A类），query 里的城市名不再需要
-        # 优先用 query_structure.what，回退到原始 query
-        what = (
-            (query_structure or {})
-            .get("dimensions", {})
-            .get("what", {})
-            .get("value")
-        )
-        standards_query = f"{category} {what}" if what else f"{category} {query}"
-        print(f"[search_expense_reimbursement] 标准查询词（what={what!r}）：{standards_query}")
+    # ── 境内（mainland 或 unknown）：BM25 + 向量兜底 + LLM分类 ───────────────
     else:
-        print(f"[search_expense_reimbursement] 未推断出分类，使用原始 query")
-        standards_query = query
+        # Step 1：BM25 精确匹配，找含实体名的分类规则 chunk
+        classification_chunks = retriever.search(query, method="bm25", top_k=10)
+        print(f"[search_expense_reimbursement] BM25 分类检索返回 {len(classification_chunks)} 条")
+
+        # Step 2：BM25 无结果时，向量检索补充分类规则
+        # 揭阳等隐式实体不在显式列表中，BM25 找不到，但向量检索能拉回"C类：其他"兜底规则
+        if not classification_chunks:
+            classification_chunks = retriever.search(query, method="vector", top_k=5)
+            print(f"[search_expense_reimbursement] BM25 无结果，向量补充分类规则 {len(classification_chunks)} 条")
+
+        # Step 3：LLM 读境内分类规则，推断 A/B/C 类
+        # 此步必须在 Executor 阶段完成：Generator 推断出分类后已无法再发起检索
+        category = llm_classify(classification_chunks, query)
+
+        if category:
+            print(f"[search_expense_reimbursement] LLM 推断境内分类：{category}")
+            # 用 what 维度替换 query，避免已解析的城市名污染标准查询词
+            standards_query = f"{category} {what}" if what else f"{category} {query}"
+            print(f"[search_expense_reimbursement] 标准查询词（what={what!r}）：{standards_query}")
+        else:
+            print(f"[search_expense_reimbursement] 未推断出分类，使用原始 query")
+            standards_query = query
 
     print(f"[search_expense_reimbursement] 费用标准查询词：{standards_query}")
 

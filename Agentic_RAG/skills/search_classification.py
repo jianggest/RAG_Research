@@ -15,7 +15,7 @@ Skill：search_classification
     使得下一步 query 变为"A类 ..."而非一堆 Markdown 原文
 """
 
-from utils import llm_classify
+from utils import llm_classify, llm_classify_overseas
 
 SKILL_META = {
     "name": "search_classification",
@@ -24,22 +24,43 @@ SKILL_META = {
 }
 
 
-def execute(query: str, retriever) -> list[dict]:
-    # Step 1：BM25 精确匹配，找含实体名的分类规则 chunk
-    chunks = retriever.search(query, method="bm25", top_k=10)
-    print(f"[search_classification] BM25 返回 {len(chunks)} 条")
+def execute(query: str, retriever, query_structure: dict = None) -> list[dict]:
+    scope = (
+        (query_structure or {})
+        .get("dimensions", {})
+        .get("where", {})
+        .get("scope", "unknown")
+    )
 
-    # Step 2：BM25 无结果时，向量检索补充分类规则
-    # 揭阳等隐式实体不在显式列表中，但向量检索能拉回"C类：其他"兜底规则
-    if not chunks:
-        chunks = retriever.search(query, method="vector", top_k=5)
-        print(f"[search_classification] BM25 无结果，向量补充分类规则 {len(chunks)} 条")
+    # ── 港澳台：境外C类，直接确定，无需检索 ──────────────────────────────────
+    if scope == "china":
+        category = "C类"
+        chunks = retriever.search(query, method="bm25", top_k=10)
+        print(f"[search_classification] 港澳台 → 境外C类（直接确定）")
 
-    # Step 3：LLM 推断分类结论
-    category = llm_classify(chunks, query)
+    # ── 境外国家：靠LLM地理常识判断，无需检索分类规则 ─────────────────────────
+    elif scope == "overseas":
+        category = llm_classify_overseas(query)
+        chunks = retriever.search(query, method="bm25", top_k=10)
+        print(f"[search_classification] 境外国家 → LLM推断境外分类：{category}")
+
+    # ── 境内（mainland 或 unknown）：BM25 + 向量兜底 + LLM境内分类 ─────────────
+    else:
+        # Step 1：BM25 精确匹配，找含实体名的分类规则 chunk
+        chunks = retriever.search(query, method="bm25", top_k=10)
+        print(f"[search_classification] BM25 返回 {len(chunks)} 条")
+
+        # Step 2：BM25 无结果时，向量检索补充分类规则
+        # 揭阳等隐式实体不在显式列表中，但向量检索能拉回"C类：其他"兜底规则
+        if not chunks:
+            chunks = retriever.search(query, method="vector", top_k=5)
+            print(f"[search_classification] BM25 无结果，向量补充分类规则 {len(chunks)} 条")
+
+        # Step 3：LLM 读境内规则推断 A/B/C 类
+        category = llm_classify(chunks, query)
+        print(f"[search_classification] LLM 推断境内分类：{category}")
 
     if category:
-        print(f"[search_classification] LLM 推断结论：{category}")
         conclusion = {
             "text": f"分类结论：查询中的实体属于{category}",
             "source": chunks[0]["source"] if chunks else "推断",
