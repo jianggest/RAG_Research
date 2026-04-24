@@ -10,7 +10,7 @@ Retriever 模块
 
 from typing import TypedDict
 
-from config import TOP_K
+from config import EMBEDDING_MODEL, TOP_K
 
 
 class SearchResult(TypedDict):
@@ -50,7 +50,11 @@ class Retriever:
         except Exception:
             pass
 
-        self._collection = client.create_collection("agentic_rag")
+        embedding_fn = _build_embedding_fn()
+        kwargs = {"name": "agentic_rag"}
+        if embedding_fn:
+            kwargs["embedding_function"] = embedding_fn
+        self._collection = client.create_collection(**kwargs)
 
         if not self._chunks:
             print("[Retriever] ⚠️ 知识库为空，索引未建立")
@@ -219,3 +223,27 @@ def _rrf_merge(
         )
         for key in sorted_keys
     ]
+
+
+# ── Embedding 工厂 ─────────────────────────────────────────────────────────────
+
+def _build_embedding_fn():
+    """
+    根据 config.EMBEDDING_MODEL 构建 ChromaDB embedding function。
+
+    - "default"：返回 None，ChromaDB 使用内置 all-MiniLM-L6-v2
+    - 其他字符串：用 SentenceTransformer 加载对应模型（如 BAAI/bge-m3）
+      依赖：pip install sentence-transformers
+    """
+    if EMBEDDING_MODEL == "default":
+        return None
+
+    try:
+        from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
+        print(f"[Retriever] 加载 Embedding 模型：{EMBEDDING_MODEL}")
+        ef = SentenceTransformerEmbeddingFunction(model_name=EMBEDDING_MODEL)
+        print(f"[Retriever] Embedding 模型加载完成")
+        return ef
+    except ImportError:
+        print("[Retriever] ❌ 未安装 sentence-transformers，回退到默认模型。运行：pip install sentence-transformers")
+        return None
