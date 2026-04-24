@@ -32,9 +32,40 @@ def init_retriever() -> tuple[Retriever, list]:
 retriever, all_chunks = init_retriever()
 
 
-# ── 侧边栏：Chunk 调试区 ──────────────────────────────────────────────────────
+# ── session_state 初始化 ──────────────────────────────────────────────────────
+
+if "result" not in st.session_state:
+    st.session_state.result = None
+if "history" not in st.session_state:
+    st.session_state.history = []
+
+
+# ── 侧边栏 ────────────────────────────────────────────────────────────────────
 
 with st.sidebar:
+    # ── 历史查询记录 ──────────────────────────────────────────────────────────
+    st.subheader("🕘 历史查询")
+
+    if not st.session_state.history:
+        st.caption("暂无历史记录")
+    else:
+        st.caption(f"共 {len(st.session_state.history)} 条")
+        for i, item in enumerate(st.session_state.history):
+            # 截断过长问题作为标题
+            label = item["question"] if len(item["question"]) <= 24 else item["question"][:24] + "…"
+            with st.expander(label, expanded=(i == 0)):
+                st.markdown(item["answer"])
+                if st.button("重新查看详情", key=f"history_load_{i}"):
+                    st.session_state.result = item["result"]
+                    st.rerun()
+
+        if st.button("清空历史", type="secondary"):
+            st.session_state.history = []
+            st.rerun()
+
+    st.divider()
+
+    # ── Chunk 调试区 ──────────────────────────────────────────────────────────
     st.subheader("📦 知识库 Chunks")
     st.caption(f"共 {len(all_chunks)} 个 chunk")
 
@@ -46,10 +77,6 @@ with st.sidebar:
 
 
 # ── 主区域：问答 ──────────────────────────────────────────────────────────────
-
-# 用 session_state 持久化结果，避免侧边栏交互触发重跑时结果消失
-if "result" not in st.session_state:
-    st.session_state.result = None
 
 question = st.text_input("请输入问题", placeholder="例如：深圳出差住宿费是多少？")
 submitted = st.button("提问", type="primary")
@@ -117,7 +144,14 @@ def _render_result(result: dict) -> None:
 
 if submitted and question.strip():
     with st.spinner("思考中..."):
-        st.session_state.result = run(question.strip(), retriever)
+        result = run(question.strip(), retriever)
+        st.session_state.result = result
+        # 追加到历史记录（最新在前）
+        st.session_state.history.insert(0, {
+            "question": result["question"],
+            "answer": result["answer"],
+            "result": result,
+        })
 
 # 从 session_state 渲染结果，重跑时（如点击侧边栏）依然保持显示
 if st.session_state.result:
