@@ -1,0 +1,16 @@
+# Agentic RAG 依赖
+
+# 向量库
+chromadb>=0.4.0
+
+# LLM 调用
+ollama
+
+# PDF 解析（用于 PDF → Markdown 转换）
+docling
+
+# Streamlit 前端
+streamlit>=1.30.0
+
+# 测试
+pytest>=7.0.0
