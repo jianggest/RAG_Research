@@ -204,6 +204,8 @@ def execute(query: str, retriever, query_structure: dict = None) -> list[dict]:
 
 | Skill | 触发场景 | 内部检索链 |
 |-------|---------|-----------|
+| `search_admin_guide` | 行政办公指引查询（着装/会议室/快递/班车/差旅票务/印章/档案等） | 伞形扩写 → hybrid（域隔离）→ 表格重排 |
+| `search_it_guide` | IT 指引查询（电脑配备/网络/系统账号/信息安全/IT 联系方式等） | 伞形扩写 → hybrid（域隔离）→ 表格重排 |
 | `search_attendance` | 考勤/休假/福利政策查询 | 伞形扩写 → hybrid（域隔离）→ 表格重排 |
 | `search_classification` | 查询实体所属分类 | scope 路由 → BM25/LLM 境内分类 或 LLM 境外分类 |
 | `search_standards` | 查询某分类下的费用标准 | 向量检索 |

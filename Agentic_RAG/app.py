@@ -10,6 +10,7 @@ import streamlit as st
 from agentic_rag import run
 from config import KNOWLEDGE_BASE_DIR
 from document_loader import load_documents
+from evaluator import get_stats, record_satisfied, record_unsatisfied
 from retriever import Retriever
 
 
@@ -38,6 +39,9 @@ if "result" not in st.session_state:
     st.session_state.result = None
 if "history" not in st.session_state:
     st.session_state.history = []
+if "eval_rated" not in st.session_state:
+    # 当前结果是否已评价；False 表示待评价，提交新问题时自动记为满意
+    st.session_state.eval_rated = True
 
 
 # ── 侧边栏 ────────────────────────────────────────────────────────────────────
@@ -62,6 +66,27 @@ with st.sidebar:
         if st.button("清空历史", type="secondary"):
             st.session_state.history = []
             st.rerun()
+
+    st.divider()
+
+    # ── 满意度统计 ────────────────────────────────────────────────────────────
+    st.subheader("📊 满意度统计")
+    stats = get_stats()
+    if stats["total"] == 0:
+        st.caption("暂无评价记录")
+    else:
+        rate = stats["satisfaction_rate"]
+        st.metric("满意率", f"{rate * 100:.1f}%" if rate is not None else "—")
+        col1, col2 = st.columns(2)
+        col1.metric("👍 满意", stats["satisfied_count"])
+        col2.metric("👎 不满意", stats["unsatisfied_count"])
+        if stats["unsatisfied_count"] > 0:
+            with st.expander(f"查看 {stats['unsatisfied_count']} 条不满意记录"):
+                for rec in reversed(stats["unsatisfied_records"]):
+                    st.markdown(f"**{rec['timestamp']}**")
+                    st.markdown(f"问题：{rec['question']}")
+                    st.markdown(f"回答：{rec['answer'][:100]}…")
+                    st.divider()
 
     st.divider()
 
@@ -143,9 +168,13 @@ def _render_result(result: dict) -> None:
 # ── 问答触发 ──────────────────────────────────────────────────────────────────
 
 if submitted and question.strip():
+    # 上一条结果未显式评价时，默认记为满意
+    if not st.session_state.eval_rated and st.session_state.result:
+        record_satisfied()
     with st.spinner("思考中..."):
         result = run(question.strip(), retriever)
         st.session_state.result = result
+        st.session_state.eval_rated = False  # 新结果等待评价
         # 追加到历史记录（最新在前）
         st.session_state.history.insert(0, {
             "question": result["question"],
@@ -159,3 +188,19 @@ if st.session_state.result:
     st.markdown(f"**❓ 你的问题：** {result['question']}")
     st.divider()
     _render_result(result)
+
+    # ── 满意度评价 ────────────────────────────────────────────────────────────
+    st.divider()
+    if st.session_state.eval_rated:
+        st.caption("✅ 已评价，感谢反馈")
+    else:
+        st.markdown("**这个回答对你有帮助吗？**")
+        col_good, col_bad, _ = st.columns([1, 1, 6])
+        if col_good.button("👍 满意", key="btn_satisfied"):
+            record_satisfied()
+            st.session_state.eval_rated = True
+            st.rerun()
+        if col_bad.button("👎 不满意", key="btn_unsatisfied"):
+            record_unsatisfied(result)
+            st.session_state.eval_rated = True
+            st.rerun()
