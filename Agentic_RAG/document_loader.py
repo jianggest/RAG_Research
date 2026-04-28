@@ -224,14 +224,20 @@ def load_documents(kb_dir: Path) -> list[Chunk]:
     all_chunks: list[Chunk] = []
 
     for md_file in sorted(kb_dir.glob("*.md")):
-        # 跳过 _clean.md 本身，由原文件查找逻辑统一处理
         if md_file.stem.endswith("_clean"):
-            continue
-        # 优先加载 _clean.md，不存在时回退到原文件
-        clean_file = md_file.with_name(f"{md_file.stem}_clean.md")
-        target = clean_file if clean_file.exists() else md_file
-        label = target.name
+            # _clean.md 的处理：
+            # - 若存在同名原始文件（去掉 _clean 后缀），则由原始文件路径统一处理，此处跳过
+            # - 若无原始文件（用户直接提供 _clean.md），则作为独立文件直接加载
+            original = md_file.with_name(md_file.stem[: -len("_clean")] + ".md")
+            if original.exists():
+                continue
+            target = md_file
+        else:
+            # 优先加载 _clean.md，不存在时回退到原文件
+            clean_file = md_file.with_name(f"{md_file.stem}_clean.md")
+            target = clean_file if clean_file.exists() else md_file
 
+        label = target.name
         content = target.read_text(encoding="utf-8")
         file_chunks = chunk_markdown(content, label)
         all_chunks.extend(file_chunks)

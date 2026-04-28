@@ -20,4 +20,9 @@ EMBEDDING_MODEL = "BAAI/bge-m3"
 # LLM
 LLM_BACKEND = "ollama"   # "ollama" | "none"
 OLLAMA_MODEL =  "qwen3.6:35b-a3b-q4_K_M" #"gemma4"  #
-OLLAMA_OPTIONS = {"num_ctx": 4096}
+OLLAMA_OPTIONS = {"num_ctx": 4096, "temperature": 0}
+
+# 文档增强索引：为每个 chunk 生成多角度问题，显著提升同义词/近义词召回
+# True  → 首次启动时调用 LLM 生成，结果缓存到 knowledge_base/.question_cache.json
+# False → 跳过增强，适合快速调试
+AUGMENT_QUESTIONS = True

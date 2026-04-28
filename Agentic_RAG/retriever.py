@@ -10,7 +10,7 @@ Retriever 模块
 
 from typing import TypedDict
 
-from config import EMBEDDING_MODEL, TOP_K
+from config import AUGMENT_QUESTIONS, EMBEDDING_MODEL, TOP_K
 
 
 class SearchResult(TypedDict):
@@ -64,11 +64,29 @@ class Retriever:
             documents=[c["text"] for c in self._chunks],
             ids=[f"chunk_{i}" for i in range(len(self._chunks))],
             metadatas=[
-                {"source": c["source"], "chunk_index": c["chunk_index"], "is_table": c["is_table"]}
+                {"source": c["source"], "chunk_index": c["chunk_index"], "is_table": c["is_table"], "is_augmented": False}
                 for c in self._chunks
             ],
         )
-        print(f"[Retriever] 索引建立完成，共 {len(self._chunks)} 条")
+        print(f"[Retriever] 原始索引建立完成，共 {len(self._chunks)} 条")
+
+        # 文档增强索引：为每个 chunk 生成问题，扩充同义词/近义词召回覆盖面
+        if AUGMENT_QUESTIONS:
+            from index_augmenter import generate_augmented_entries
+            entries = generate_augmented_entries(self._chunks)
+            if entries:
+                self._collection.add(
+                    documents=[e["document"] for e in entries],
+                    ids=[f"aug_{e['chunk_hash']}_{i}" for i, e in enumerate(entries)],
+                    metadatas=[{
+                        "source":        e["source"],
+                        "chunk_index":   e["chunk_index"],
+                        "is_table":      e["is_table"],
+                        "is_augmented":  True,
+                        "original_text": e["original_text"],
+                    } for e in entries],
+                )
+                print(f"[Retriever] 增强问题索引：{len(entries)} 条")
 
     def vector_search(
         self,
@@ -90,26 +108,42 @@ class Retriever:
         if n == 0:
             return []
 
-        kwargs = {"query_texts": [query], "n_results": n}
+        # 增强索引会产生多条指向同一 chunk 的条目，多取 3 倍再去重，保证去重后仍有足够结果
+        n_fetch = min(n * 3, self._collection.count()) if AUGMENT_QUESTIONS else n
+        kwargs = {"query_texts": [query], "n_results": n_fetch}
         if where:
             kwargs["where"] = where
 
         raw = self._collection.query(**kwargs)
 
-        return [
-            SearchResult(
-                text=doc,
-                source=meta.get("source", ""),
-                # ChromaDB 返回 L2 距离，转换为 0~1 相似度
-                score=round(max(0.0, 1 - dist), 4),
-                is_table=bool(meta.get("is_table", False)),
-            )
-            for doc, meta, dist in zip(
-                raw["documents"][0],
-                raw["metadatas"][0],
-                raw["distances"][0],
-            )
-        ]
+        # 增强条目：document 是问题文本，真正的 chunk 内容在 metadata["original_text"]
+        # 按 text 去重，保留每个 chunk 得分最高的那条（原始条目或增强条目均可）
+        seen: dict[str, SearchResult] = {}
+        for doc, meta, dist in zip(
+            raw["documents"][0],
+            raw["metadatas"][0],
+            raw["distances"][0],
+        ):
+            is_augmented = meta.get("is_augmented", False)
+            text = meta.get("original_text", doc) if is_augmented else doc
+            score = round(max(0.0, 1 - dist), 4)
+            key = text[:100]
+
+            # 增强索引命中时打印：可以看到是哪个生成问题触发了这次匹配
+            if is_augmented:
+                print(f"[Retriever] 🔗 增强命中 score={score:.4f} | 问题：'{doc[:50]}' → {meta.get('source','')}")
+
+            if key not in seen or score > seen[key]["score"]:
+                seen[key] = SearchResult(
+                    text=text,
+                    source=meta.get("source", ""),
+                    score=score,
+                    is_table=bool(meta.get("is_table", False)),
+                )
+
+        results = sorted(seen.values(), key=lambda r: r["score"], reverse=True)[:top_k]
+        print(f"[Retriever] vector_search top{len(results)} 分数: {[r['score'] for r in results]}")
+        return results
 
     def bm25_search(self, query: str, top_k: int = TOP_K) -> list[SearchResult]:
         """
@@ -127,9 +161,9 @@ class Retriever:
             print("[Retriever] ❌ 未安装 rank-bm25，运行：pip install rank-bm25")
             return []
 
-        # BM25 以字符级分词（按字切分），适合中文无分词场景
-        tokenized_corpus = [list(c["text"]) for c in self._chunks]
-        tokenized_query = list(query)
+        # jieba 词级分词；未安装时降级为字符级分词
+        tokenized_corpus = [_tokenize(c["text"]) for c in self._chunks]
+        tokenized_query = _tokenize(query)
 
         bm25 = BM25Okapi(tokenized_corpus)
         scores = bm25.get_scores(tokenized_query)
@@ -147,14 +181,15 @@ class Retriever:
             if scores[i] > 0
         ]
 
-    def hybrid_search(self, query: str, top_k: int = TOP_K) -> list[SearchResult]:
+    def hybrid_search(self, query: str, top_k: int = TOP_K, where: dict = None) -> list[SearchResult]:
         """
         混合检索：BM25 + 向量，用 RRF（倒数排名融合）合并两路结果。
 
         RRF 公式：score = Σ 1 / (k + rank_i)，k=60
         两路都无结果时降级为纯向量检索。
+        where: metadata 过滤条件，传给 vector_search 限定来源域，防止增强索引跨域污染。
         """
-        vector_results = self.vector_search(query, top_k=top_k * 2)
+        vector_results = self.vector_search(query, top_k=top_k * 2, where=where)
         bm25_results = self.bm25_search(query, top_k=top_k * 2)
 
         if not bm25_results:
@@ -181,7 +216,7 @@ class Retriever:
         if method == "bm25":
             return self.bm25_search(query, top_k)
         if method == "hybrid":
-            return self.hybrid_search(query, top_k)
+            return self.hybrid_search(query, top_k, where=where)
         return self.vector_search(query, top_k, where=where)
 
     @property
@@ -220,6 +255,7 @@ def _rrf_merge(
             text=text_to_result[key]["text"],
             source=text_to_result[key]["source"],
             score=round(rrf_scores[key], 6),
+            is_table=bool(text_to_result[key].get("is_table", False)),
         )
         for key in sorted_keys
     ]
@@ -247,3 +283,24 @@ def _build_embedding_fn():
     except ImportError:
         print("[Retriever] ❌ 未安装 sentence-transformers，回退到默认模型。运行：pip install sentence-transformers")
         return None
+
+
+# ── 分词工具 ───────────────────────────────────────────────────────────────────
+
+def _tokenize(text: str) -> list[str]:
+    """
+    中文词级分词，供 BM25 使用。
+
+    优先使用 jieba 词级分词（"生日福利" → ["生日", "福利"]），
+    jieba 未安装时降级为字符级分词（["生", "日", "福", "利"]）。
+
+    词级分词的优势：复合词（生日福利/年假/加班费）作为整体 token，
+    IDF 值更高，BM25 能精确区分"生日福利"与其他含"福利"的 chunk。
+
+    安装：pip install jieba
+    """
+    try:
+        import jieba
+        return list(jieba.cut(text))
+    except ImportError:
+        return list(text)

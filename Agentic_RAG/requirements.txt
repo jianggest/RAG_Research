@@ -12,5 +12,11 @@ docling
 # Streamlit 前端
 streamlit>=1.30.0
 
+# BM25 关键词检索
+rank-bm25
+
+# 中文分词（BM25 词级分词，显著提升复合词检索精度）
+jieba
+
 # 测试
 pytest>=7.0.0

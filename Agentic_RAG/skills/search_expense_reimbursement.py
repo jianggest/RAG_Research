@@ -30,9 +30,17 @@ Skill：search_expense_reimbursement（复合 Skill）
 
 from utils import llm_classify, llm_classify_overseas
 
+# 本 Skill 只检索报销域的文档，防止考勤/福利类 chunk 混入
+_SOURCES = {
+    "报销相关_clean.md",
+}
+
 SKILL_META = {
     "name": "search_expense_reimbursement",
-    "description": "当 query 涉及【差旅费用】【报销标准】【出差补贴】等财务报销类事项时调用，优先查询具体地区的差旅报销标准，差旅费用限额、补贴金额等数值标准相关的表格信息。",
+    "description":(
+        "该Skill处理财务报销相关查询，如涉及费用问题会内部自动完成「实体分类推断 → 费用标准」两步检索链。"
+        "当 query 涉及【差旅费用】【报销标准】【出差补贴】等财务报销类事项时调用，优先查询具体地区的差旅报销标准，差旅费用限额、补贴金额等数值标准相关的表格信息。"
+        ),
     "retrieval_method": "composite",
 }
 
@@ -53,6 +61,9 @@ def execute(query: str, retriever, query_structure: dict = None) -> list[dict]:
         .get("value")
     )
     print(f"[search_expense_reimbursement] scope={scope}")
+
+    # vector_search 限定来源域，防止增强索引跨域污染
+    _where = {"source": {"$in": list(_SOURCES)}}
 
     # ── 港澳台：直接定为境外C类，无需分类检索 ────────────────────────────────
     if scope == "china":
@@ -81,7 +92,7 @@ def execute(query: str, retriever, query_structure: dict = None) -> list[dict]:
         # Step 2：BM25 无结果时，向量检索补充分类规则
         # 揭阳等隐式实体不在显式列表中，BM25 找不到，但向量检索能拉回"C类：其他"兜底规则
         if not classification_chunks:
-            classification_chunks = retriever.search(query, method="vector", top_k=5)
+            classification_chunks = retriever.search(query, method="vector", top_k=5, where=_where)
             print(f"[search_expense_reimbursement] BM25 无结果，向量补充分类规则 {len(classification_chunks)} 条")
 
         # Step 3：LLM 读境内分类规则，推断 A/B/C 类
@@ -100,7 +111,7 @@ def execute(query: str, retriever, query_structure: dict = None) -> list[dict]:
     print(f"[search_expense_reimbursement] 费用标准查询词：{standards_query}")
 
     # Step 4：向量检索对应分类的费用标准（多取几条，为后续重排留余量）
-    standards_results = retriever.search(standards_query, method="vector", top_k=8)
+    standards_results = retriever.search(standards_query, method="vector", top_k=8, where=_where)
     print(f"[search_expense_reimbursement] 费用标准检索返回 {len(standards_results)} 条")
 
     # Step 5：表格优先重排（Structural Bias）
@@ -115,7 +126,8 @@ def execute(query: str, retriever, query_structure: dict = None) -> list[dict]:
         print("[search_expense_reimbursement] 🤔 自检：询问金额但未发现数值标准，切换表格强制探测模式...")
         table_query = f"{category} 住宿 交通 补贴" if category else query
         retry_results = retriever.search(
-            table_query, method="vector", top_k=8, where={"is_table": True}
+            table_query, method="vector", top_k=8,
+            where={"$and": [{"source": {"$in": list(_SOURCES)}}, {"is_table": True}]},
         )
         print(f"[search_expense_reimbursement] 表格探测返回 {len(retry_results)} 条")
         if retry_results:
@@ -130,7 +142,21 @@ def execute(query: str, retriever, query_structure: dict = None) -> list[dict]:
             seen.add(key)
             merged.append(r)
 
-    return merged
+    # 来源过滤：只保留本域文档的 chunk，防止考勤/福利类 chunk 混入
+    return _filter_by_source(merged, _SOURCES)
+
+
+def _filter_by_source(results: list[dict], sources: set[str], min_keep: int = 3) -> list[dict]:
+    """
+    按来源文件过滤，只保留属于本 Skill 域的 chunk。
+
+    若过滤后结果不足 min_keep 条，回退到不过滤——防止知识库文件名变更时静默返回空结果。
+    """
+    filtered = [r for r in results if r.get("source") in sources]
+    if len(filtered) < min_keep:
+        print(f"[search_expense_reimbursement] ⚠️ 来源过滤后仅剩 {len(filtered)} 条（< {min_keep}），回退到不过滤")
+        return results
+    return filtered
 
 
 _AMOUNT_KEYWORDS = {"多少", "金额", "限额", "标准", "费用", "补贴", "元", "报销额", "上限", "下限"}

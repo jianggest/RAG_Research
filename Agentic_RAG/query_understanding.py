@@ -54,8 +54,9 @@ _PARSE_PROMPT = """\
 
 【缺失维度处理规则】
 - Who 缺失：默认补全为"其他员工"，inferred=true，missing 加入"who"，但 needs_clarification 保持 false（用默认值继续）
-- Where 缺失且问题涉及地区性标准（出差、差旅等）：needs_clarification=true，missing 加入"where"
-- Where 缺失但问题与地区无关（如请假流程）：不标记缺失
+- Where 缺失时，判断标准只有一条：「该问题的答案是否会因城市/地区不同而不同？」
+    - 是（如差旅报销标准因城市分类而异）：needs_clarification=true，missing 加入"where"
+    - 否（如考勤/休假/福利/IT工具等全公司统一适用的规定）：不标记缺失，needs_clarification 保持 false
 
 【冲突检测规则】
 - 同一问题中出现逻辑相悖的实体组合时，在 conflicts 中描述冲突
