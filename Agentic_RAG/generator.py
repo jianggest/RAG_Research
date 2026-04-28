@@ -21,6 +21,8 @@ _ANSWER_PROMPT_TEMPLATE = """\
 5. 回答时注明信息来源的文档名
 6. 回答中出现分类标签（如"A类地区"）时，必须同时说明用户询问的具体实体（如城市名）属于该类，\
 例如："深圳属于A类地区，其住宿费标准为..."，不得只说类别而不提原始实体
+7. 若检索内容中包含"## 第N页"格式的页码标记，在回答最后单独一行用以下格式注明实际引用的页码：\
+[引用页面: 第N页, 第M页]（仅列出真正用于回答的页码，未用到的页不列）
 {style_instruction}{assumption_note}{entity_note}
 检索到的内容：
 {context}
@@ -88,9 +90,10 @@ def _build_assumption_note(query_structure: Optional[dict]) -> str:
     if not query_structure:
         return ""
     dims = query_structure.get("dimensions", {})
+    # 只注明地区推断，身份推断对用户意义不大且容易造成干扰
     inferred = [
         f"{label}={dims[key]['value']}"
-        for key, label in [("who", "身份"), ("where", "地区")]
+        for key, label in [("where", "地区")]
         if dims.get(key, {}).get("inferred") and dims[key].get("value")
     ]
     if not inferred:

@@ -35,6 +35,29 @@ _SOURCES = {
     "报销相关_clean.md",
 }
 
+# 境内 B 类地区：省会城市（排除已在 A 类中的北京、上海、广州、深圳）
+# 文档规则"B类：省会城市"未逐一列出，此处硬编码用于跳过 LLM 推断，直接确定 B 类
+_PROVINCIAL_CAPITALS: set[str] = {
+    "石家庄", "太原", "沈阳", "长春", "哈尔滨",
+    "南京", "杭州", "合肥", "福州", "南昌",
+    "济南", "郑州", "武汉", "长沙", "海口",
+    "成都", "贵阳", "昆明", "西安", "兰州",
+    "西宁", "台北", "呼和浩特", "南宁", "拉萨",
+    "银川", "乌鲁木齐",
+}
+
+# 省会城市补充知识虚拟 chunk：注入分类上下文，辅助 LLM 判断某城市是否为省会
+_PROVINCIAL_CAPITALS_CHUNK: dict = {
+    "text": (
+        "补充参考（省会城市名单）：以下城市为中国各省省会，"
+        "在差旅费用分类规则中属于 B 类城市的省会城市范畴：\n"
+        + "、".join(sorted(_PROVINCIAL_CAPITALS))
+    ),
+    "source": "provincial_capitals_knowledge",
+    "score": 0.0,
+    "is_table": False,
+}
+
 SKILL_META = {
     "name": "search_expense_reimbursement",
     "description":(
@@ -95,6 +118,10 @@ def execute(query: str, retriever, query_structure: dict = None) -> list[dict]:
             classification_chunks = retriever.search(query, method="vector", top_k=5, where=_where)
             print(f"[search_expense_reimbursement] BM25 无结果，向量补充分类规则 {len(classification_chunks)} 条")
 
+        # 注入省会城市补充知识：前置到分类上下文，确保进入 llm_classify 的 top-3
+        # LLM 推断时可参考此列表判断某城市是否为省会，再结合完整分类规则得出结论
+        classification_chunks = [_PROVINCIAL_CAPITALS_CHUNK] + classification_chunks
+
         # Step 3：LLM 读境内分类规则，推断 A/B/C 类
         # 此步必须在 Executor 阶段完成：Generator 推断出分类后已无法再发起检索
         category = llm_classify(classification_chunks, query)
@@ -142,6 +169,19 @@ def execute(query: str, retriever, query_structure: dict = None) -> list[dict]:
             seen.add(key)
             merged.append(r)
 
+    # 将分类结论注入返回结果首位，Generator 可直接读取，无需自行推断
+    # 与 search_classification.py 的设计保持一致
+    if category:
+        conclusion_chunk = {
+            "text": f"分类推断结论：{where_value or query} 属于境内 {category} 地区。",
+            "source": "classification_conclusion",
+            "score": 1.0,
+            "is_table": False,
+            "is_conclusion": True,
+            "category": category,
+        }
+        merged = [conclusion_chunk] + merged
+
     # 来源过滤：只保留本域文档的 chunk，防止考勤/福利类 chunk 混入
     return _filter_by_source(merged, _SOURCES)
 
@@ -150,9 +190,10 @@ def _filter_by_source(results: list[dict], sources: set[str], min_keep: int = 3)
     """
     按来源文件过滤，只保留属于本 Skill 域的 chunk。
 
+    is_conclusion=True 的结论 chunk 始终保留（source 为内部标记，不在 sources 内）。
     若过滤后结果不足 min_keep 条，回退到不过滤——防止知识库文件名变更时静默返回空结果。
     """
-    filtered = [r for r in results if r.get("source") in sources]
+    filtered = [r for r in results if r.get("is_conclusion") or r.get("source") in sources]
     if len(filtered) < min_keep:
         print(f"[search_expense_reimbursement] ⚠️ 来源过滤后仅剩 {len(filtered)} 条（< {min_keep}），回退到不过滤")
         return results
