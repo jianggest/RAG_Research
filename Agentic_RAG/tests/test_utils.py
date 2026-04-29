@@ -4,7 +4,7 @@ utils 模块测试
 覆盖范围：
   - extract_key_entities：结论优先 > 表格清洗 > 纯文本截取
   - clean_table_text：Markdown 表格转纯文本
-  - llm_classify：LLM 推断分类（Mock LLM）
+  - llm_classify_region：LLM 统一推断地理范围 + 费用分类（Mock LLM）
 """
 
 import sys
@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from unittest.mock import patch
 
-from utils import clean_table_text, extract_key_entities, llm_classify
+from utils import clean_table_text, extract_key_entities, llm_classify_region
 
 
 # ── 工具函数 ──────────────────────────────────────────────────────────────────
@@ -96,44 +96,51 @@ class TestCleanTableText:
         assert len(result) <= 300
 
 
-# ── llm_classify 测试 ────────────────────────────────────────────────────────
+# ── llm_classify_region 测试 ─────────────────────────────────────────────────
 
-class TestLlmClassify:
+class TestLlmClassifyRegion:
 
-    def test_returns_category_from_llm(self):
-        """LLM 返回有效分类时应原样返回"""
+    def test_returns_scope_and_category_from_llm(self):
+        """LLM 返回有效分类时应解析出地理范围和类别"""
         chunks = [{"text": "A 类地区：北京、上海、广州、深圳", "source": "test.md", "score": 0.9}]
-        with patch("llm.call_llm", return_value="A类"):
-            result = llm_classify(chunks, "深圳出差住宿费")
-        assert result == "A类"
+        with patch("llm.call_llm", return_value="境内A类"):
+            result = llm_classify_region(chunks, "深圳")
+        assert result == {"scope_label": "境内", "category": "A类"}
+
+    def test_accepts_space_between_scope_and_category(self):
+        """支持 '境外 B类' 这类带空格输出"""
+        chunks = [{"text": "境外 A类：欧洲、美国、日本；境外 B类：其他国家", "source": "test.md", "score": 0.9}]
+        with patch("llm.call_llm", return_value="境外 B类"):
+            result = llm_classify_region(chunks, "德国")
+        assert result == {"scope_label": "境外", "category": "B类"}
 
     def test_returns_empty_for_unknown(self):
-        """LLM 返回'未知'时应返回空字符串"""
+        """LLM 返回'未知'时应返回空 dict"""
         chunks = [{"text": "A 类：北京；B类：珠海", "source": "test.md", "score": 0.9}]
         with patch("llm.call_llm", return_value="未知"):
-            result = llm_classify(chunks, "揭阳出差住宿费")
-        assert result == ""
+            result = llm_classify_region(chunks, "揭阳")
+        assert result == {}
 
-    def test_returns_empty_when_no_chunks(self):
-        """无检索结果时不调用 LLM，直接返回空"""
+    def test_returns_empty_when_no_chunks_or_city(self):
+        """无规则 chunk 或无地名时不调用 LLM，直接返回空 dict"""
         with patch("llm.call_llm") as mock_llm:
-            result = llm_classify([], "揭阳出差住宿费")
-        assert result == ""
+            assert llm_classify_region([], "揭阳") == {}
+            assert llm_classify_region([{"text": "规则"}], "") == {}
         mock_llm.assert_not_called()
 
     def test_returns_empty_for_too_long_response(self):
-        """LLM 返回过长内容（非分类名）时过滤掉"""
+        """LLM 返回过长内容（非标准分类结果）时过滤掉"""
         chunks = [{"text": "分类规则", "source": "test.md", "score": 0.9}]
         with patch("llm.call_llm", return_value="这是一段很长的解释文字，不是分类名称，应该被过滤掉"):
-            result = llm_classify(chunks, "某城市")
-        assert result == ""
+            result = llm_classify_region(chunks, "某城市")
+        assert result == {}
 
     def test_returns_empty_on_llm_failure(self):
-        """LLM 调用失败时返回空字符串，不崩溃"""
+        """LLM 调用失败时返回空 dict，不崩溃"""
         chunks = [{"text": "分类规则", "source": "test.md", "score": 0.9}]
         with patch("llm.call_llm", return_value=""):
-            result = llm_classify(chunks, "某城市")
-        assert result == ""
+            result = llm_classify_region(chunks, "某城市")
+        assert result == {}
 
     def test_only_uses_top3_chunks(self):
         """只使用 top-3 chunk，不把所有结果都塞进 prompt"""
@@ -141,8 +148,8 @@ class TestLlmClassify:
         captured_prompt = []
         def fake_llm(prompt):
             captured_prompt.append(prompt)
-            return "A类"
+            return "境内A类"
         with patch("llm.call_llm", side_effect=fake_llm):
-            llm_classify(chunks, "查询")
+            llm_classify_region(chunks, "查询")
         assert "chunk3" not in captured_prompt[0]
         assert "chunk0" in captured_prompt[0]

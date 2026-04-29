@@ -36,14 +36,15 @@ def main():
     img_map = {p: img_paths[p - 1] for p in range(1, len(img_paths) + 1) if p - 1 < len(img_paths)}
 
     # 将各页内容拼接为 Markdown
-    # 每页头部嵌入图片路径标记 __PAGE_IMG__:/abs/path/page_XX.png
-    # 该标记供前端检测后渲染原始图片，同时不影响文字检索
+    # 每页头部嵌入图片路径标记。写入相对 knowledge_base 的路径，避免跨机器/跨系统失效。
+    # 该标记供前端检测后渲染原始图片，同时不影响文字检索。
     lines = []
     for c in chunks:
         img_path = img_map.get(c["page"])
         lines.append(f"## 第{c['page']}页\n")
         if img_path:
-            lines.append(f"__PAGE_IMG__:{img_path.as_posix()}\n")
+            rel_img_path = img_path.relative_to(KB_DIR)
+            lines.append(f"__PAGE_IMG__:{rel_img_path.as_posix()}\n")
         lines.append(c["text"])
         lines.append("\n")
 

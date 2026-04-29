@@ -120,34 +120,40 @@ def _build_entity_note(
     提取"原始实体 → 分类"映射，注入 prompt，确保 LLM 回答时提及原始实体而非只说类别。
 
     映射来源：
-    - 原始实体：query_structure.dimensions.where / who 的 value
-    - 分类结论：executed_steps 中 is_conclusion=True 的 chunk 的 category 字段
+    - 优先使用 executed_steps 中 is_conclusion=True 的结构化字段 entity/category/full_category
+    - 兼容旧数据：无 entity 时回退 query_structure.dimensions.where / who 的 value
     """
     if not query_structure:
         return ""
 
     dims = query_structure.get("dimensions", {})
-    entity = (
+    fallback_entity = (
         dims.get("where", {}).get("value")
         or dims.get("who", {}).get("value")
     )
-    if not entity:
-        return ""
-
-    # 从执行结果中找分类结论 chunk
-    category = None
+    entity_categories = []
+    seen: set[tuple[str, str]] = set()
     for step in executed_steps:
         for r in step.get("results", []):
             if r.get("is_conclusion") and r.get("category"):
-                category = r["category"]
-                break
-        if category:
-            break
+                entity = r.get("entity") or fallback_entity
+                category = r.get("full_category") or r.get("category")
+                if not entity or not category:
+                    continue
+                key = (entity, category)
+                if key not in seen:
+                    seen.add(key)
+                    entity_categories.append(key)
 
-    if not category:
+    if not entity_categories:
         return ""
 
-    return f'7. 已知"{entity}"被识别为"{category}"，回答中必须明确说明"{entity}属于{category}"，再给出对应标准\n'
+    if len(entity_categories) == 1:
+        entity, category = entity_categories[0]
+        return f'7. 已知"{entity}"被识别为"{category}"，回答中必须明确说明"{entity}属于{category}"，再给出对应标准\n'
+
+    mapping = "；".join(f"{entity}属于{category}" for entity, category in entity_categories)
+    return f"7. 已知多个地区分类结论：{mapping}。回答中必须逐一对应地区说明分类和标准，不得只使用第一个地区的分类\n"
 
 
 def _build_context(executed_steps: list) -> str:

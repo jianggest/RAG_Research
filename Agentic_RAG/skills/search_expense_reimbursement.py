@@ -7,9 +7,9 @@ Skill：search_expense_reimbursement（复合 Skill）
   分类推断必须在 Executor 阶段完成，不能依赖 Generator 推断。
   原因：Generator 推断出分类后已无法再发起检索，拿不到对应分类的费用标准数据。
 
-  检索链（单路径，静态规则注入 + LLM 统一判断）：
-  - Step 1：注入境内/境外分类静态规则（_CHUNK_CHINA + _CHUNK_OVERSEA）
-  - Step 2：LLM 一次性输出完整分类（如"境内A类"、"境外B类"、"境外C类"）
+  检索链（确定性配置优先 + LLM 兜底）：
+  - Step 1：读取 config/region_classification.json 做确定性地区分类
+  - Step 2：配置未覆盖时，注入配置规则文本给 LLM 兜底判断
   - Step 3：向量检索对应分类的费用标准
   - Step 4：表格优先重排（Structural Bias），is_table=True 的 chunk 分值 × 1.5
   - Step 5：反思自检，询问金额但无数值时强制切换表格探测模式
@@ -18,7 +18,9 @@ Skill：search_expense_reimbursement（复合 Skill）
   - where_value 含多个城市时（如"深圳, 德国"），逐个执行分类链后合并结果
 """
 
+import json
 import re
+from pathlib import Path
 
 from utils import llm_classify_region
 
@@ -27,27 +29,8 @@ _SOURCES = {
     "报销相关_clean.md",
 }
 
-   # 境内与境外分类的静态规则注入
-_CHUNK_CHINA = [
-        {
-            "text": (
-                "A 类地区：北京、上海、广州、深圳 "
-                "B 类地区：珠海、汕头、厦门、大连、秦皇岛、天津、烟台、青岛、连云港、南通、宁波、温州、福州、湛江、北海、石家庄、太原、沈阳、长春、哈尔滨、南京、杭州、合肥、福州、南昌、济南、郑州、武汉、长沙、海口、成都、贵阳、昆明、、西安、兰州、、西宁、台北、、呼和浩特、南宁、拉萨、银川、乌鲁木齐"
-                "C 类地区：其他"
-                ),
-            "source": "internal_rule_china",
-            "score": 1.0,
-            "is_table": False
-        }
-    ]
-_CHUNK_OVERSEA = [
-       {
-            "text": "境外 A 类地区：新加坡、欧洲、美国、日本；境外 B类地区：其他国家；境外 C 类地区：澳门，香港，台湾。",
-           "source": "internal_rule_oversea",
-           "score": 1.0,
-            "is_table": False
-        }
-    ]
+_REGION_RULE_PATH = Path(__file__).resolve().parent.parent / "config" / "region_classification.json"
+_REGION_RULES_CACHE: dict | None = None
 
 
 
@@ -96,6 +79,120 @@ def _split_cities(where_value: str) -> list[str]:
     return parts
 
 
+def _load_region_rules() -> dict:
+    """读取受控地区分类配置。配置缺失时返回空 dict，让 LLM 兜底。"""
+    global _REGION_RULES_CACHE
+    if _REGION_RULES_CACHE is not None:
+        return _REGION_RULES_CACHE
+
+    try:
+        _REGION_RULES_CACHE = json.loads(_REGION_RULE_PATH.read_text(encoding="utf-8"))
+    except Exception as e:
+        print(f"[search_expense_reimbursement] 地区分类配置读取失败：{e}")
+        _REGION_RULES_CACHE = {}
+    return _REGION_RULES_CACHE
+
+
+def _normalize_place_name(place: str | None) -> str:
+    """标准化地名，降低 '深圳市'、'香港特别行政区' 这类表述差异。"""
+    if not place:
+        return ""
+    normalized = re.sub(r"\s+", "", str(place))
+    changed = True
+    while changed:
+        changed = False
+        for suffix in ("特别行政区", "地区", "省", "市"):
+            if normalized.endswith(suffix) and len(normalized) > len(suffix):
+                normalized = normalized[: -len(suffix)]
+                changed = True
+                break
+    return normalized
+
+
+def _matches_place(place: str, candidates: list[str]) -> bool:
+    normalized = _normalize_place_name(place)
+    return any(normalized == _normalize_place_name(candidate) for candidate in candidates)
+
+
+def _classify_region_by_rules(city: str | None) -> dict:
+    """
+    使用 config/region_classification.json 做确定性地区分类。
+
+    返回格式与 llm_classify_region 保持一致：
+      {"scope_label": "境内"|"境外", "category": "A类"|"B类"|"C类"}
+    未覆盖时返回空 dict，由 LLM 兜底。
+    """
+    if not city:
+        return {}
+
+    rules = _load_region_rules()
+    if not rules:
+        return {}
+
+    mainland = rules.get("mainland", {})
+    mainland_scope = mainland.get("scope_label", "境内")
+    mainland_categories = mainland.get("categories", {})
+
+    for category in ("A类", "B类"):
+        if _matches_place(city, mainland_categories.get(category, [])):
+            return {"scope_label": mainland_scope, "category": category}
+
+    if _matches_place(city, mainland.get("c_class_examples", [])):
+        return {"scope_label": mainland_scope, "category": "C类"}
+
+    overseas = rules.get("overseas", {})
+    overseas_scope = overseas.get("scope_label", "境外")
+    overseas_categories = overseas.get("categories", {})
+
+    if _matches_place(city, overseas_categories.get("C类", [])):
+        return {"scope_label": overseas_scope, "category": "C类"}
+
+    overseas_a = overseas_categories.get("A类", {})
+    overseas_a_places = list(overseas_a.get("places", []))
+    for group_name, members in overseas_a.get("region_groups", {}).items():
+        overseas_a_places.append(group_name)
+        overseas_a_places.extend(members)
+    if _matches_place(city, overseas_a_places):
+        return {"scope_label": overseas_scope, "category": "A类"}
+
+    if _matches_place(city, overseas.get("b_class_examples", [])):
+        return {"scope_label": overseas_scope, "category": "B类"}
+
+    return {}
+
+
+def _build_static_rule_chunks() -> list[dict]:
+    """将配置转换为 LLM 兜底分类可读的规则 chunk。"""
+    rules = _load_region_rules()
+    if not rules:
+        return []
+
+    mainland = rules.get("mainland", {})
+    mainland_categories = mainland.get("categories", {})
+    china_text = (
+        "A 类地区：" + "、".join(mainland_categories.get("A类", [])) + "；"
+        "B 类地区：" + "、".join(mainland_categories.get("B类", [])) + "；"
+        "C 类地区：其他。"
+    )
+
+    overseas = rules.get("overseas", {})
+    overseas_categories = overseas.get("categories", {})
+    overseas_a = overseas_categories.get("A类", {})
+    a_parts = list(overseas_a.get("places", []))
+    for group_name, members in overseas_a.get("region_groups", {}).items():
+        a_parts.append(f"{group_name}（包括{'、'.join(members)}）")
+    overseas_text = (
+        "境外 A 类地区：" + "、".join(a_parts) + "；"
+        "境外 B 类地区：其他国家；"
+        "境外 C 类地区：" + "、".join(overseas_categories.get("C类", [])) + "。"
+    )
+
+    return [
+        {"text": china_text, "source": "internal_rule_china", "score": 1.0, "is_table": False},
+        {"text": overseas_text, "source": "internal_rule_oversea", "score": 1.0, "is_table": False},
+    ]
+
+
 def _execute_for_city(
     query: str,
     retriever,
@@ -116,20 +213,24 @@ def _execute_for_city(
     # vector_search 限定来源域，防止增强索引跨域污染
     _where = {"source": {"$in": list(_SOURCES)}}
 
-    # 构造以城市为中心的检索词
-    city_query = f"{city} {what}" if city and what else query
+    # 注入配置规则，供 LLM 兜底时参考，也作为分类依据进入上下文。
+    classification_chunks = _build_static_rule_chunks()
 
-    # 注入境内外分类静态规则，直接交给 LLM 判断
-    classification_chunks = _CHUNK_CHINA + _CHUNK_OVERSEA
-
-    # Step 3：LLM 一次性判断地理范围 + 费用分类
-    region = llm_classify_region(classification_chunks, city)
+    # Step 3：配置确定性分类优先；配置未覆盖时再交给 LLM 兜底。
+    region = _classify_region_by_rules(city)
+    if region:
+        print(
+            f"[search_expense_reimbursement] 配置规则分类："
+            f"{city} → {region.get('scope_label', '')}{region.get('category', '')}"
+        )
+    else:
+        region = llm_classify_region(classification_chunks, city)
 
     scope_label = region.get("scope_label", "")
     category = region.get("category", "")
 
     if category:
-        print(f"[search_expense_reimbursement] LLM 统一分类：{city} → {scope_label}{category}")
+        print(f"[search_expense_reimbursement] 分类结果：{city} → {scope_label}{category}")
         # 构造费用标准查询词
         if scope_label == "境外":
             standards_query = f"境外 {category} {city} {what}" if what else f"境外 {category} {city}"
@@ -153,7 +254,7 @@ def _execute_for_city(
 
     # Step 6：反思自检
     if _is_amount_query(query) and not _has_numeric_standard(standards_results):
-        print("[search_expense_reimbursement] 🤔 自检：询问金额但未发现数值标准，切换表格强制探测模式...")
+        print("[search_expense_reimbursement] 自检：询问金额但未发现数值标准，切换表格强制探测模式...")
         table_query = f"{category} 住宿 交通 补贴" if category else query
         retry_results = retriever.search(
             table_query, method="vector", top_k=8,
@@ -174,13 +275,17 @@ def _execute_for_city(
 
     # 注入分类结论
     if category:
+        full_category = f"{scope_label}{category}"
         conclusion_chunk = {
-            "text": f"分类推断结论：{city or query} 属于{scope_label}{category}地区。",
+            "text": f"分类推断结论：{city or query} 属于{full_category}地区。",
             "source": "classification_conclusion",
             "score": 1.0,
             "is_table": False,
             "is_conclusion": True,
+            "entity": city or query,
+            "scope_label": scope_label,
             "category": category,
+            "full_category": full_category,
         }
         merged = [conclusion_chunk] + merged
 
@@ -257,7 +362,7 @@ def _log_standards_results(results: list[dict]) -> None:
     """打印重排后的费用标准检索结果，便于诊断表格是否被正确提升。"""
     print(f"[search_expense_reimbursement] 重排后费用标准（共 {len(results)} 条）：")
     for i, r in enumerate(results, 1):
-        table_flag = "📊表格" if r.get("is_table") else "📄文本"
+        table_flag = "表格" if r.get("is_table") else "文本"
         score = r.get("score", 0)
         preview = r.get("text", "")[:80].replace("\n", " ")
         print(f"  [{i}] {table_flag} score={score:.3f} | {preview}")

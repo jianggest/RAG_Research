@@ -119,8 +119,38 @@ def _extract_page_img(text: str) -> Path | None:
     m = _PAGE_IMG_RE.search(text)
     if not m:
         return None
-    p = Path(m.group(1).strip())
-    return p if p.exists() else None
+    return _resolve_page_img_path(m.group(1).strip())
+
+
+def _resolve_page_img_path(raw_path: str) -> Path | None:
+    """
+    将 __PAGE_IMG__ 标记解析为当前机器可访问的图片路径。
+
+    兼容两类历史/新格式：
+    - 旧格式：生成机器上的绝对路径，如 /home/.../knowledge_base/.page_cache/资产管理流程/page_01.png
+    - 新格式：相对知识库路径，如 .page_cache/资产管理流程/page_01.png
+    """
+    if not raw_path:
+        return None
+
+    raw = Path(raw_path)
+    candidates = []
+
+    if raw.is_absolute():
+        candidates.append(raw)
+    else:
+        candidates.append(KNOWLEDGE_BASE_DIR / raw)
+        candidates.append(Path(__file__).parent / raw)
+
+    parts = raw_path.replace("\\", "/").split("/")
+    if ".page_cache" in parts:
+        cache_idx = parts.index(".page_cache")
+        candidates.append(KNOWLEDGE_BASE_DIR / Path(*parts[cache_idx:]))
+
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return None
 
 
 def _extract_cited_images(answer: str, executed_steps: list) -> list[Path]:
