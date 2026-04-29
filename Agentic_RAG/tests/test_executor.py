@@ -42,29 +42,29 @@ class TestBasicExecution:
         """单步计划应正常执行并返回结果"""
         plan = {
             "steps": [
-                {"step_id": 1, "skill": "search_classification", "query": "深圳分类", "depends_on": None}
+                {"step_id": 1, "skill": "search_expense_reimbursement", "query": "深圳分类", "depends_on": None}
             ]
         }
-        registry = make_skill_registry("search_classification", SAMPLE_RESULTS)
+        registry = make_skill_registry("search_expense_reimbursement", SAMPLE_RESULTS)
         retriever = make_retriever(SAMPLE_RESULTS)
 
         steps = execute_plan(plan, retriever, skill_registry=registry)
 
         assert len(steps) == 1
-        assert steps[0]["skill"] == "search_classification"
+        assert steps[0]["skill"] == "search_expense_reimbursement"
         assert steps[0]["results"] == SAMPLE_RESULTS
 
     def test_multi_step_all_executed(self):
         """多步计划的每个 step 都应被执行"""
         plan = {
             "steps": [
-                {"step_id": 1, "skill": "search_classification", "query": "深圳分类", "depends_on": None},
-                {"step_id": 2, "skill": "search_standards", "query": "A类住宿费", "depends_on": None},
+                {"step_id": 1, "skill": "search_expense_reimbursement", "query": "深圳分类", "depends_on": None},
+                {"step_id": 2, "skill": "search_attendance", "query": "A类住宿费", "depends_on": None},
             ]
         }
         registry = {
-            "search_classification": {"meta": {}, "execute": MagicMock(return_value=SAMPLE_RESULTS)},
-            "search_standards": {"meta": {}, "execute": MagicMock(return_value=SAMPLE_RESULTS)},
+            "search_expense_reimbursement": {"meta": {}, "execute": MagicMock(return_value=SAMPLE_RESULTS)},
+            "search_attendance": {"meta": {}, "execute": MagicMock(return_value=SAMPLE_RESULTS)},
         }
         retriever = make_retriever(SAMPLE_RESULTS)
 
@@ -81,14 +81,14 @@ class TestDependsOnAndPlaceholder:
         """{{step_1_result}} 应被第1步检索结果的摘要替换"""
         plan = {
             "steps": [
-                {"step_id": 1, "skill": "search_classification", "query": "深圳分类", "depends_on": None},
-                {"step_id": 2, "skill": "search_standards", "query": "<step_1_result> 住宿费", "depends_on": 1},
+                {"step_id": 1, "skill": "search_expense_reimbursement", "query": "深圳分类", "depends_on": None},
+                {"step_id": 2, "skill": "search_attendance", "query": "<step_1_result> 住宿费", "depends_on": 1},
             ]
         }
         step2_execute = MagicMock(return_value=[])
         registry = {
-            "search_classification": {"meta": {}, "execute": MagicMock(return_value=SAMPLE_RESULTS)},
-            "search_standards": {"meta": {}, "execute": step2_execute},
+            "search_expense_reimbursement": {"meta": {}, "execute": MagicMock(return_value=SAMPLE_RESULTS)},
+            "search_attendance": {"meta": {}, "execute": step2_execute},
         }
         retriever = make_retriever(SAMPLE_RESULTS)
 

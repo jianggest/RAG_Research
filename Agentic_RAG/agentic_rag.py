@@ -32,18 +32,24 @@ class RunResult(TypedDict):
     needs_clarification: bool        # True 时 answer 为追问文案
 
 
-def run(question: str, retriever) -> RunResult:
+def run(question: str, retriever, on_progress=None) -> RunResult:
     """
     执行完整的 Agentic RAG 流程（v2.0）。
 
     Args:
-        question:  用户提问
-        retriever: 已建立索引的 Retriever 实例
+        question:     用户提问
+        retriever:    已建立索引的 Retriever 实例
+        on_progress:  进度回调函数，签名 (msg: str) -> None，用于通知 UI 当前阶段
 
     Returns:
         RunResult，包含中间过程和最终回答，供 app.py 展示。
     """
+    def _notify(msg: str):
+        if on_progress:
+            on_progress(msg)
+
     # ── Step 0: 查询语义解析 ─────────────────────────────────────────────────
+    _notify("语义分析中...")
     query_structure = parse_query(question)
 
     # 关键维度缺失时，直接追问用户，不进入检索流程
@@ -59,6 +65,7 @@ def run(question: str, retriever) -> RunResult:
         )
 
     # ── Step 1: Planner ──────────────────────────────────────────────────────
+    _notify("制定检索计划...")
     skill_descriptions = get_skill_descriptions()
     plan_result = plan(question, skill_descriptions, query_structure)
 
@@ -73,9 +80,11 @@ def run(question: str, retriever) -> RunResult:
         )
 
     # ── Step 2: Executor ─────────────────────────────────────────────────────
+    _notify("检索执行中...")
     executed_steps = execute_plan(plan_result, retriever, query_structure=query_structure)
 
     # ── Step 3: Generator ────────────────────────────────────────────────────
+    _notify("生成回答中...")
     answer = generate(question, executed_steps, query_structure)
 
     return RunResult(

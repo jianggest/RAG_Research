@@ -7,56 +7,49 @@ Skill：search_expense_reimbursement（复合 Skill）
   分类推断必须在 Executor 阶段完成，不能依赖 Generator 推断。
   原因：Generator 推断出分类后已无法再发起检索，拿不到对应分类的费用标准数据。
 
-  检索链（根据 scope 分三条路径）：
+  检索链（单路径，静态规则注入 + LLM 统一判断）：
+  - Step 1：注入境内/境外分类静态规则（_CHUNK_CHINA + _CHUNK_OVERSEA）
+  - Step 2：LLM 一次性输出完整分类（如"境内A类"、"境外B类"、"境外C类"）
+  - Step 3：向量检索对应分类的费用标准
+  - Step 4：表格优先重排（Structural Bias），is_table=True 的 chunk 分值 × 1.5
+  - Step 5：反思自检，询问金额但无数值时强制切换表格探测模式
 
-  [境内 scope=mainland/unknown]
-  - Step 1：BM25 找含实体名的分类规则 chunk（深圳等显式实体命中）
-  - Step 2：BM25 无结果时，向量检索补充分类规则（揭阳等隐式实体兜底）
-  - Step 3：LLM 读境内规则，推断 A/B/C 类
-  - Step 4+：向量检索境内费用标准
-
-  [港澳台 scope=china]
-  - 直接定为境外C类，跳过分类检索
-  - 向量检索"境外 C类 港澳台"费用标准
-
-  [境外国家 scope=overseas]
-  - LLM 直接判断：欧美日新 → 境外A类，其他 → 境外B类
-  - 向量检索"境外 X类"费用标准
-
-  [通用后处理]
-  - Step N-1：表格优先重排（Structural Bias），is_table=True 的 chunk 分值 × 1.5
-  - Step N：反思自检，询问金额但无数值时强制切换表格探测模式
+  多城市支持：
+  - where_value 含多个城市时（如"深圳, 德国"），逐个执行分类链后合并结果
 """
 
-from utils import llm_classify, llm_classify_overseas
+import re
+
+from utils import llm_classify_region
 
 # 本 Skill 只检索报销域的文档，防止考勤/福利类 chunk 混入
 _SOURCES = {
     "报销相关_clean.md",
 }
 
-# 境内 B 类地区：省会城市（排除已在 A 类中的北京、上海、广州、深圳）
-# 文档规则"B类：省会城市"未逐一列出，此处硬编码用于跳过 LLM 推断，直接确定 B 类
-_PROVINCIAL_CAPITALS: set[str] = {
-    "石家庄", "太原", "沈阳", "长春", "哈尔滨",
-    "南京", "杭州", "合肥", "福州", "南昌",
-    "济南", "郑州", "武汉", "长沙", "海口",
-    "成都", "贵阳", "昆明", "西安", "兰州",
-    "西宁", "台北", "呼和浩特", "南宁", "拉萨",
-    "银川", "乌鲁木齐",
-}
+   # 境内与境外分类的静态规则注入
+_CHUNK_CHINA = [
+        {
+            "text": (
+                "A 类地区：北京、上海、广州、深圳 "
+                "B 类地区：珠海、汕头、厦门、大连、秦皇岛、天津、烟台、青岛、连云港、南通、宁波、温州、福州、湛江、北海、石家庄、太原、沈阳、长春、哈尔滨、南京、杭州、合肥、福州、南昌、济南、郑州、武汉、长沙、海口、成都、贵阳、昆明、、西安、兰州、、西宁、台北、、呼和浩特、南宁、拉萨、银川、乌鲁木齐"
+                "C 类地区：其他"
+                ),
+            "source": "internal_rule_china",
+            "score": 1.0,
+            "is_table": False
+        }
+    ]
+_CHUNK_OVERSEA = [
+       {
+            "text": "境外 A 类地区：新加坡、欧洲、美国、日本；境外 B类地区：其他国家；境外 C 类地区：澳门，香港，台湾。",
+           "source": "internal_rule_oversea",
+           "score": 1.0,
+            "is_table": False
+        }
+    ]
 
-# 省会城市补充知识虚拟 chunk：注入分类上下文，辅助 LLM 判断某城市是否为省会
-_PROVINCIAL_CAPITALS_CHUNK: dict = {
-    "text": (
-        "补充参考（省会城市名单）：以下城市为中国各省省会，"
-        "在差旅费用分类规则中属于 B 类城市的省会城市范畴：\n"
-        + "、".join(sorted(_PROVINCIAL_CAPITALS))
-    ),
-    "source": "provincial_capitals_knowledge",
-    "score": 0.0,
-    "is_table": False,
-}
+
 
 SKILL_META = {
     "name": "search_expense_reimbursement",
@@ -69,86 +62,96 @@ SKILL_META = {
 
 
 def execute(query: str, retriever, query_structure: dict = None) -> list[dict]:
-    scope = (
+    """
+    入口函数：检测多城市时逐个执行分类链，单城市直接执行。
+    """
+    where_value = (
         (query_structure or {})
         .get("dimensions", {})
         .get("where", {})
-        .get("scope", "unknown")
+        .get("value")
     )
-    where_dim = (query_structure or {}).get("dimensions", {}).get("where", {})
-    where_value = where_dim.get("value")
+
+    # 拆分多城市（支持"A, B"、"A，B"、"A和B"格式）
+    cities = _split_cities(where_value) if where_value else []
+
+    if len(cities) <= 1:
+        # 单城市或无城市，直接走原有流程
+        return _execute_for_city(query, retriever, query_structure, where_value)
+
+    # 多城市：逐个执行分类链，合并结果
+    print(f"[search_expense_reimbursement] 检测到多城市：{cities}")
+    all_results: list[dict] = []
+    for city in cities:
+        print(f"[search_expense_reimbursement] ── 处理城市：{city} ──")
+        city_results = _execute_for_city(query, retriever, query_structure, city)
+        all_results = _merge_deduplicate(all_results, city_results)
+
+    return all_results
+
+
+def _split_cities(where_value: str) -> list[str]:
+    """拆分多城市字符串，支持逗号和"和"分隔。"""
+    parts = [c.strip() for c in re.split(r"[,，和]", where_value) if c.strip()]
+    return parts
+
+
+def _execute_for_city(
+    query: str,
+    retriever,
+    query_structure: dict,
+    city: str | None,
+) -> list[dict]:
+    """
+    对单个城市执行完整的分类 → 费用标准检索链（单路径，无 scope 分支）。
+    """
     what = (
         (query_structure or {})
         .get("dimensions", {})
         .get("what", {})
         .get("value")
     )
-    print(f"[search_expense_reimbursement] scope={scope}")
+    print(f"[search_expense_reimbursement] city={city}")
 
     # vector_search 限定来源域，防止增强索引跨域污染
     _where = {"source": {"$in": list(_SOURCES)}}
 
-    # ── 港澳台：直接定为境外C类，无需分类检索 ────────────────────────────────
-    if scope == "china":
-        category = "C类"
-        classification_chunks = []
-        print(f"[search_expense_reimbursement] 港澳台 → 境外C类（直接确定）")
-        # 保留地名（香港/澳门/台湾），因为它出现在表格列头里
-        where_part = where_value or "港澳台"
-        standards_query = f"境外 C类 {where_part} {what}" if what else f"境外 C类 {where_part} {query}"
+    # 构造以城市为中心的检索词
+    city_query = f"{city} {what}" if city and what else query
 
-    # ── 境外国家：LLM判断欧美日新(A类) 或 其他(B类) ──────────────────────────
-    elif scope == "overseas":
-        category = llm_classify_overseas(query)
-        classification_chunks = []
-        print(f"[search_expense_reimbursement] 境外国家 → LLM推断境外分类：{category}")
-        # 保留国家名（美国/日本等），因为它出现在表格列头"A类：欧洲/美国/日本/新加坡"里
-        where_part = where_value or ""
-        standards_query = f"境外 {category} {where_part} {what}".strip() if what else f"境外 {category} {where_part} {query}".strip()
+    # 注入境内外分类静态规则，直接交给 LLM 判断
+    classification_chunks = _CHUNK_CHINA + _CHUNK_OVERSEA
 
-    # ── 境内（mainland 或 unknown）：BM25 + 向量兜底 + LLM分类 ───────────────
-    else:
-        # Step 1：BM25 精确匹配，找含实体名的分类规则 chunk
-        classification_chunks = retriever.search(query, method="bm25", top_k=10)
-        print(f"[search_expense_reimbursement] BM25 分类检索返回 {len(classification_chunks)} 条")
+    # Step 3：LLM 一次性判断地理范围 + 费用分类
+    region = llm_classify_region(classification_chunks, city)
 
-        # Step 2：BM25 无结果时，向量检索补充分类规则
-        # 揭阳等隐式实体不在显式列表中，BM25 找不到，但向量检索能拉回"C类：其他"兜底规则
-        if not classification_chunks:
-            classification_chunks = retriever.search(query, method="vector", top_k=5, where=_where)
-            print(f"[search_expense_reimbursement] BM25 无结果，向量补充分类规则 {len(classification_chunks)} 条")
+    scope_label = region.get("scope_label", "")
+    category = region.get("category", "")
 
-        # 注入省会城市补充知识：前置到分类上下文，确保进入 llm_classify 的 top-3
-        # LLM 推断时可参考此列表判断某城市是否为省会，再结合完整分类规则得出结论
-        classification_chunks = [_PROVINCIAL_CAPITALS_CHUNK] + classification_chunks
-
-        # Step 3：LLM 读境内分类规则，推断 A/B/C 类
-        # 此步必须在 Executor 阶段完成：Generator 推断出分类后已无法再发起检索
-        category = llm_classify(classification_chunks, query)
-
-        if category:
-            print(f"[search_expense_reimbursement] LLM 推断境内分类：{category}")
-            # 用 what 维度替换 query，避免已解析的城市名污染标准查询词
-            standards_query = f"{category} {what}" if what else f"{category} {query}"
-            print(f"[search_expense_reimbursement] 标准查询词（what={what!r}）：{standards_query}")
+    if category:
+        print(f"[search_expense_reimbursement] LLM 统一分类：{city} → {scope_label}{category}")
+        # 构造费用标准查询词
+        if scope_label == "境外":
+            standards_query = f"境外 {category} {city} {what}" if what else f"境外 {category} {city}"
         else:
-            print(f"[search_expense_reimbursement] 未推断出分类，使用原始 query")
-            standards_query = query
+            standards_query = f"{category} {what}" if what else f"{category} {query}"
+        print(f"[search_expense_reimbursement] 标准查询词：{standards_query}")
+    else:
+        print(f"[search_expense_reimbursement] 未推断出分类，使用原始 query")
+        scope_label = ""
+        standards_query = query
 
     print(f"[search_expense_reimbursement] 费用标准查询词：{standards_query}")
 
-    # Step 4：向量检索对应分类的费用标准（多取几条，为后续重排留余量）
+    # Step 4：向量检索对应分类的费用标准
     standards_results = retriever.search(standards_query, method="vector", top_k=8, where=_where)
     print(f"[search_expense_reimbursement] 费用标准检索返回 {len(standards_results)} 条")
 
-    # Step 5：表格优先重排（Structural Bias）
-    # 财务标准 90% 在表格里，给 is_table=True 的 chunk 增加 50% 分值后重新排序
-    # 目的：防止语义相近的说明性文字（如"业务招待标准"介绍段）排在费用表格前面
+    # Step 5：表格优先重排
     standards_results = _boost_table_chunks(standards_results, boost=0.5)
     _log_standards_results(standards_results)
 
-    # Step 6：反思自检 —— 仅当用户在询问具体金额时，才检查结果是否含数值
-    # 非金额类问题（如"需要哪些材料"、"流程是什么"）结果本就不含数字，不应触发重试
+    # Step 6：反思自检
     if _is_amount_query(query) and not _has_numeric_standard(standards_results):
         print("[search_expense_reimbursement] 🤔 自检：询问金额但未发现数值标准，切换表格强制探测模式...")
         table_query = f"{category} 住宿 交通 补贴" if category else query
@@ -160,7 +163,7 @@ def execute(query: str, retriever, query_structure: dict = None) -> list[dict]:
         if retry_results:
             standards_results = retry_results
 
-    # 合并去重（classification_chunks + standards），按 text 前100字去重
+    # 合并去重
     seen: set[str] = set()
     merged = []
     for r in classification_chunks + standards_results:
@@ -169,11 +172,10 @@ def execute(query: str, retriever, query_structure: dict = None) -> list[dict]:
             seen.add(key)
             merged.append(r)
 
-    # 将分类结论注入返回结果首位，Generator 可直接读取，无需自行推断
-    # 与 search_classification.py 的设计保持一致
+    # 注入分类结论
     if category:
         conclusion_chunk = {
-            "text": f"分类推断结论：{where_value or query} 属于境内 {category} 地区。",
+            "text": f"分类推断结论：{city or query} 属于{scope_label}{category}地区。",
             "source": "classification_conclusion",
             "score": 1.0,
             "is_table": False,
@@ -182,8 +184,20 @@ def execute(query: str, retriever, query_structure: dict = None) -> list[dict]:
         }
         merged = [conclusion_chunk] + merged
 
-    # 来源过滤：只保留本域文档的 chunk，防止考勤/福利类 chunk 混入
+    # 来源过滤
     return _filter_by_source(merged, _SOURCES)
+
+
+def _merge_deduplicate(primary: list[dict], secondary: list[dict]) -> list[dict]:
+    """合并两路结果，按 text 前 100 字去重，primary 结果优先保留。"""
+    seen: set[str] = set()
+    merged = []
+    for r in primary + secondary:
+        key = r["text"][:100]
+        if key not in seen:
+            seen.add(key)
+            merged.append(r)
+    return merged
 
 
 def _filter_by_source(results: list[dict], sources: set[str], min_keep: int = 3) -> list[dict]:

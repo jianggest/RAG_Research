@@ -18,7 +18,7 @@ def load_skills() -> dict:
 
     返回：
         {
-            "search_classification": {
+            "search_expense_reimbursement": {
                 "meta": SKILL_META,
                 "execute": execute_fn,
             },
@@ -75,8 +75,8 @@ def get_skill_descriptions() -> str:
     返回所有 Skill 的描述文本，供 Planner 的 prompt 使用。
 
     示例输出：
-        - search_classification: 查询某个实体属于哪个分类/等级
-        - search_standards: 查询某个分类下的具体标准/金额/限额
+        - search_expense_reimbursement: 处理财务报销相关查询
+        - search_attendance: 查询考勤相关规定
     """
     registry = get_registry()
     lines = []

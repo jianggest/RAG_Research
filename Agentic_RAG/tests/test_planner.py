@@ -18,7 +18,7 @@ class TestParsePlanJson:
 
     def test_valid_json_parsed_correctly(self):
         """合法 JSON 应正确解析"""
-        raw = '''{"reasoning": "需要两步", "steps": [{"step_id": 1, "skill": "search_classification", "query": "深圳", "depends_on": null}]}'''
+        raw = '''{"reasoning": "需要两步", "steps": [{"step_id": 1, "skill": "search_expense_reimbursement", "query": "深圳", "depends_on": null}]}'''
         result = parse_plan_json(raw)
         assert "error" not in result
         assert len(result["steps"]) == 1
@@ -57,13 +57,13 @@ class TestPlanFunction:
 
     def test_plan_returns_parsed_dict_on_success(self):
         """LLM 返回合法 JSON 时，plan() 应返回解析后的 dict"""
-        mock_response = '{"reasoning": "先查分类", "steps": [{"step_id": 1, "skill": "search_classification", "query": "深圳", "depends_on": null}]}'
+        mock_response = '{"reasoning": "先查分类", "steps": [{"step_id": 1, "skill": "search_expense_reimbursement", "query": "深圳", "depends_on": null}]}'
 
         with patch("planner.call_llm", return_value=mock_response):
-            result = plan("深圳住宿费", skill_descriptions="- search_classification: 查分类")
+            result = plan("深圳住宿费", skill_descriptions="- search_expense_reimbursement: 查分类")
 
         assert "error" not in result
-        assert result["steps"][0]["skill"] == "search_classification"
+        assert result["steps"][0]["skill"] == "search_expense_reimbursement"
 
     def test_plan_returns_error_on_llm_failure(self):
         """LLM 返回空字符串时，plan() 应返回含 error 的 dict"""

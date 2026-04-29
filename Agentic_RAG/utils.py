@@ -5,7 +5,7 @@
 对外接口：
   extract_key_entities(results) -> str   # 从检索结果提取关键实体文本（优先读结论）
   clean_table_text(table_text) -> str    # Markdown 表格转纯文本
-  llm_classify(chunks, entity_query) -> str  # LLM 从检索结果推断实体所属分类
+  llm_classify_region(chunks, city) -> dict  # LLM 统一判断地理范围 + 费用分类
 """
 
 import re
@@ -16,7 +16,7 @@ def extract_key_entities(results: list) -> str:
     从检索结果中提取关键实体文本，用于下一步的查询词。
 
     优先级：
-    1. is_conclusion=True 的结论 chunk（由 search_classification 的 LLM 推断产生）
+    1. is_conclusion=True 的结论 chunk（由 search_expense_reimbursement 的 LLM 推断产生）
        直接返回 category 字段，格式干净，如"C类"
     2. 含 Markdown 表格的文本 → 清洗为纯文本单元格
     3. 普通文本 → 截取前 200 字
@@ -67,85 +67,80 @@ def clean_table_text(table_text: str) -> str:
     return " ".join(cells)[:300]
 
 
-def llm_classify_overseas(entity_query: str) -> str:
+def llm_classify_region(chunks: list, city: str) -> dict:
     """
-    判断境外实体属于哪个境外费用类别。
+    统一的地区分类函数：一次 LLM 调用同时完成地理范围判断和费用类别判断。
 
-    境外分类规则（固定，无需检索）：
-      A类：欧洲/美国/日本/新加坡
-      B类：其他国家/地区
-      C类：港澳台（由 scope=china 直接确定，不走此函数）
-
-    Returns:
-        "A类" | "B类"；无法判断时返回空字符串
-    """
-    prompt = f"""\
-根据以下境外出差费用分类规则，判断问题中涉及的国家/地区属于哪个类别。
-只输出类别名称本身（如"A类"、"B类"），不要其他解释。
-
-境外分类规则：
-- A类：欧洲各国、美国、日本、新加坡
-- B类：其他国家/地区
-
-注意：如果无法判断，输出"B类"作为保守默认值。
-
-问题：{entity_query}
-
-该国家/地区的境外类别是："""
-
-    from llm import call_llm
-    result = call_llm(prompt).strip()
-
-    if not result or len(result) > 20:
-        return "B类"  # 境外未知国家默认B类
-
-    return result
-
-
-def llm_classify(chunks: list, entity_query: str) -> str:
-    """
-    调用 LLM 从检索结果中推断实体所属分类。
-
-    这是分类 Skill 的核心推断步骤：
-    - 深圳：BM25 命中分类规则 → LLM 读规则 → 直接得出"A类"
-    - 揭阳：BM25 未命中 → chunks 为空 → 返回""
-      （揭阳的兜底推断交由 Generator 完成，它能读到完整分类规则后推断"C类：其他"）
+    LLM 读取检索到的分类规则 chunk，结合地理常识，输出完整分类结论。
+    例如：深圳 → 境内A类，德国 → 境外A类，香港 → 境外C类
 
     Args:
-        chunks:       检索到的分类规则 chunk 列表
-        entity_query: 用户原始查询词（含实体名，如"深圳出差住宿费"）
+        chunks:  检索到的分类规则 chunk 列表（含境内/境外分类规则）
+        city:    单个城市或国家名称
 
     Returns:
-        分类结论字符串（如"A类"）；无法推断时返回空字符串
+        {“scope_label”: “境内”|”境外”, “category”: “A类”|”B类”|”C类”}
+        无法推断时返回空 dict。
     """
-    if not chunks:
-        return ""
+    if not chunks or not city:
+        return {}
 
     # 只取 top-3，控制 token 消耗
-    context = "\n---\n".join(c["text"] for c in chunks[:3])
-
+    context = """\n---\n""".join(c["text"] for c in chunks[:3])
+    print(f"[llm_classify_region] 构造 LLM 上下文：\n{context}\n---")
     prompt = f"""\
-根据以下分类规则，判断问题中涉及的实体属于哪个类别。
-只输出类别名称本身（如"A类"、"B类"、"C类"），不要其他解释。
+根据以下分类规则，对指定地名完成两步判断：
+
+第一步：判断地名属于哪个地理范围
+- 境内：中国大陆的城市或省份（如深圳、揭阳、北京、四川）
+- 境外：港澳台地区（香港、澳门、台湾）或外国（如美国、日本、德国）
+
+第二步：根据分类规则确定费用类别（A类/B类/C类）
+- 境内地名：按规则判断属于境内 A类/B类/C类
+- 境外地名：按规则判断属于境外 A类/B类/C类（港澳台通常为境外C类）
 
 推理说明：
-- 如果实体在规则中被明确列出，直接使用对应类别。
-- 需要认真核对区域划分和分类细则，避免常识误导（例如：揭阳是C类，不要被它的地理位置误导为B类）。
-- 如果实体未被明确列出，那就是排除项的选型（例如：境内的地区，除了A和B就是C类；境外的国家，除了A就是B类”）。
-- 只有确实无法判断时，才输出"未知"。
+- 如果地名在规则中被明确列出，直接使用对应类别
+- 如果地名未被明确列出，使用排除法（如：境内不在A类和B类列表中的城市属于C类）
+- 需要认真核对规则，避免常识误导
+
+只输出一行结果，格式为”<地理范围><类别>”，例如：
+- 境内A类
+- 境外B类
+- 境外C类
 
 分类规则：
 {context}
 
-问题：{entity_query}
+地名：{city}
 
-该实体的类别是："""
+分类结果："""
 
-    from llm import call_llm  # 延迟导入，避免循环依赖
+    from llm import call_llm
     result = call_llm(prompt).strip()
+    print(f"[llm_classify_region] {city!r} → LLM 原始输出：{result!r}")
 
-    # 过滤无效回答
-    if not result or result == "未知" or len(result) > 20:
-        return ""
+    return _parse_region_result(result)
 
-    return result
+
+def _parse_region_result(result: str) -> dict:
+    """
+    解析 LLM 输出的分类结果字符串。
+
+    支持格式：”境内A类”、”境内 A类”、”境外B类” 等。
+   """
+    if not result or len(result) > 20:
+        return {}
+
+    # 提取”境内/境外”和”X类”
+    scope_match = re.search(r"(境内|境外)", result)
+    category_match = re.search(r"([ABC]类)", result)
+
+    if not scope_match or not category_match:
+        print(f"[llm_classify_region] ⚠️ 无法解析分类结果：{result!r}")
+        return {}
+
+    return {
+        "scope_label": scope_match.group(1),
+        "category": category_match.group(1),
+    }

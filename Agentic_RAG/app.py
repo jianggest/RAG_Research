@@ -228,8 +228,11 @@ if submitted and question.strip():
     # 上一条结果未显式评价时，默认记为满意
     if not st.session_state.eval_rated and st.session_state.result:
         record_satisfied()
-    with st.spinner("思考中..."):
-        result = run(question.strip(), retriever)
+    with st.status("处理中...", expanded=False) as status:
+        def _update_progress(msg: str):
+            status.update(label=msg)
+        result = run(question.strip(), retriever, on_progress=_update_progress)
+        status.update(label="完成", state="complete")
         st.session_state.result = result
         st.session_state.eval_rated = False  # 新结果等待评价
         # 追加到历史记录（最新在前）
