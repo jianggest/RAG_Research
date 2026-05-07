@@ -18,9 +18,18 @@ TOP_K = 5
 EMBEDDING_MODEL = "BAAI/bge-m3"
 
 # LLM
-LLM_BACKEND = "ollama"   # "ollama" | "none"
+# 默认 AI 模型后端：决定 call_llm() 走哪条分支
+LLM_BACKEND = "openai"   # "ollama" | "openai" | "none"
+
+# Ollama 配置
 OLLAMA_MODEL =  "qwen3.6:35b-a3b-q4_K_M" #"gemma4"  #
 OLLAMA_OPTIONS = {"num_ctx": 4096, "temperature": 0}
+
+# OpenAI（兼容 OpenAI 协议的网关）配置
+OPENAI_BASE_URL = "https://aicode.wewell.net/v1"
+OPENAI_API_KEY = "sk-5c8387ac5581157a0d07cc997bb5e83c9d7e489cd78509e1c8cc8571462941f7"
+OPENAI_MODEL = "gpt-5.4"
+OPENAI_OPTIONS = {"temperature": 0}
 
 # 文档增强索引：为每个 chunk 生成多角度问题，显著提升同义词/近义词召回
 # True  → 首次启动时调用 LLM 生成，结果缓存到 knowledge_base/.question_cache.json
