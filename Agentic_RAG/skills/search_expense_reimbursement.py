@@ -37,8 +37,12 @@ _REGION_RULES_CACHE: dict | None = None
 SKILL_META = {
     "name": "search_expense_reimbursement",
     "description":(
-        "该Skill处理财务报销相关查询，如涉及费用问题会内部自动完成「实体分类推断 → 费用标准」两步检索链。"
-        "当 query 涉及【差旅费用】【报销标准】【出差补贴】等财务报销类事项时调用，优先查询具体地区的差旅报销标准，差旅费用限额、补贴金额等数值标准相关的表格信息。"
+        "该Skill处理财务报销与出差业务流程相关查询，覆盖两类问题："
+        "（1）数值/标准类：【差旅费用】【报销标准】【出差补贴】【住宿费/交通费限额】等，"
+        "内部自动完成「实体分类推断 → 费用标准」两步检索链；"
+        "（2）流程类：【出差申请单】【出差审批流程】【报销审批流程】【报销时限/材料要求】等。"
+        "⚠️只要问题涉及『出差/报销』这类业务动作，即使 query 里出现【OA系统】【HR系统】等系统名，"
+        "也应走本 Skill——系统名只表示『在哪里操作』，业务知识不在 IT 指引里。"
         ),
     "retrieval_method": "composite",
 }
@@ -74,8 +78,17 @@ def execute(query: str, retriever, query_structure: dict = None) -> list[dict]:
 
 
 def _split_cities(where_value: str) -> list[str]:
-    """拆分多城市字符串，支持逗号和"和"分隔。"""
-    parts = [c.strip() for c in re.split(r"[,，和]", where_value) if c.strip()]
+    """拆分多城市字符串。
+
+    分隔符兼容不同 LLM 的输出习惯：
+    - 半角/全角逗号、顿号、分号、斜杠：`, ， 、 ; ； /`
+    - 连接词：`和`、`与`、`及`
+
+    背景：QueryUnderstanding 的 where.value 是 LLM 自由文本，不同模型对
+    "A 和 B" 的归一化形式不同（Ollama 多保留 `和`，gpt-5.4 改写为 `、`），
+    切分规则需同时覆盖这些形式。
+    """
+    parts = [c.strip() for c in re.split(r"[,，、;；/]|和|与|及", where_value) if c.strip()]
     return parts
 
 

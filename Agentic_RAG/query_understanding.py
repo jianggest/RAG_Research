@@ -50,9 +50,17 @@ _PARSE_PROMPT = """\
 
 【缺失维度处理规则】
 - Who 缺失：默认补全为"其他员工"，inferred=true，missing 加入"who"，但 needs_clarification 保持 false（用默认值继续）
-- Where 缺失时，判断标准只有一条：「该问题的答案是否会因城市/地区不同而不同？」
-    - 是（如差旅报销标准因城市分类而异）：needs_clarification=true，missing 加入"where"
-    - 否（如考勤/休假/福利/IT工具等全公司统一适用的规定）：不标记缺失，needs_clarification 保持 false
+- Where 缺失时，按以下顺序判断（命中任一前置条件即停止判断，needs_clarification=false）：
+    1. 问的是【相对调整/增量】——含"增加"、"上浮"、"下调"、"调整"、"超标"、"提高"、"降低"、"+/-"等：
+       调整规则全国统一，与具体地区无关 → 不追问
+    2. 问的是【流程/凭证/材料/办理方式】而非金额——含"流程"、"申请"、"审批"、"办理"、"丢失"、"怎么办"、"材料"、"凭证"等：
+       流程全国统一 → 不追问
+    3. 问的是【共享规则/场景约束】——含"几人"、"同性别"、"同房间"、"陪同"、"同地点"、"合住"等：
+       场景规则全国统一 → 不追问
+    4. 全公司统一适用的考勤/休假/福利/IT工具等规定 → 不追问
+    5. 否则，问的是【按地区分级的绝对金额】（如"住宿费是多少"、"补贴标准是什么"）：
+       needs_clarification=true，missing 加入"where"
+- 关键提示：「住宿/差旅/补贴」字样并不必然要求 Where，必须先排除上面 1-4 项。
 
 【冲突检测规则】
 - 同一问题中出现逻辑相悖的实体组合时，在 conflicts 中描述冲突
@@ -97,6 +105,19 @@ def parse_query(question: str) -> QueryStructure:
     raw = call_llm(prompt)
 
     structure = _parse_llm_response(raw, question)
+
+    # 兜底：若 LLM 把"相对调整/流程/共享规则"类问题误标为需要 Where 澄清，强制纠正。
+    # 这类问题的答案与具体地区无关，不应追问城市。
+    if structure["needs_clarification"] and _looks_region_independent(question):
+        only_missing_where = (
+            "where" in structure["missing"]
+            and not any(m for m in structure["missing"] if m != "where" and m != "who")
+        )
+        if only_missing_where:
+            print("[QueryUnderstanding] 兜底纠正：query 命中区域无关关键词，撤销 Where 澄清")
+            structure["needs_clarification"] = False
+            structure["missing"] = [m for m in structure["missing"] if m != "where"]
+
     where_dim = structure['dimensions']['where']
     print(f"[QueryUnderstanding] 维度: who={structure['dimensions']['who']['value']} "
           f"where={where_dim['value']} "
@@ -109,6 +130,23 @@ def parse_query(question: str) -> QueryStructure:
         print(f"[QueryUnderstanding] 需要追问用户")
 
     return structure
+
+
+# 命中以下任一关键词，说明问题本质与具体地区无关（相对调整/流程/共享规则），
+# 即使 LLM 错误标记了 needs_clarification=true，也强制不追问 Where。
+_REGION_INDEPENDENT_KEYWORDS = (
+    # 相对调整 / 增量
+    "增加", "上浮", "下调", "调整", "超标", "递增", "提高", "降低", "上调",
+    # 流程 / 凭证 / 材料
+    "流程", "申请", "审批", "办理", "丢失", "丢了", "怎么办", "材料", "凭证", "发票",
+    # 共享规则 / 场景约束
+    "几人", "同性别", "同房间", "陪同", "同地点", "合住", "同一间", "同行",
+)
+
+
+def _looks_region_independent(question: str) -> bool:
+    """检查 query 是否含『区域无关』强信号词。"""
+    return any(kw in question for kw in _REGION_INDEPENDENT_KEYWORDS)
 
 
 def build_clarification_question(query_structure: QueryStructure) -> str:

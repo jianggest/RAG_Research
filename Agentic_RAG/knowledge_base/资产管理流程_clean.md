@@ -1,6 +1,6 @@
-## 第1页
+﻿## 第1页
 
-__PAGE_IMG__:/home/jjh/works/RAG_Projects/Agentic_RAG/knowledge_base/.page_cache/资产管理流程/page_01.png
+__PAGE_IMG__:.page_cache/资产管理流程/page_01.png
 
 APPOTRONICS®
 资产管理流程
@@ -12,7 +12,7 @@ New light, New life®
 
 ## 第2页
 
-__PAGE_IMG__:/home/jjh/works/RAG_Projects/Agentic_RAG/knowledge_base/.page_cache/资产管理流程/page_02.png
+__PAGE_IMG__:.page_cache/资产管理流程/page_02.png
 
 资产管理
 
@@ -30,7 +30,7 @@ New light, New life
 
 ## 第3页
 
-__PAGE_IMG__:/home/jjh/works/RAG_Projects/Agentic_RAG/knowledge_base/.page_cache/资产管理流程/page_03.png
+__PAGE_IMG__:.page_cache/资产管理流程/page_03.png
 
 APPOTRONICS
 一、概况
@@ -76,7 +76,7 @@ ALPD
 
 ## 第4页
 
-__PAGE_IMG__:/home/jjh/works/RAG_Projects/Agentic_RAG/knowledge_base/.page_cache/资产管理流程/page_04.png
+__PAGE_IMG__:.page_cache/资产管理流程/page_04.png
 
 二、固定资产管理
 
@@ -110,7 +110,7 @@ ALPD®
 
 ## 第5页
 
-__PAGE_IMG__:/home/jjh/works/RAG_Projects/Agentic_RAG/knowledge_base/.page_cache/资产管理流程/page_05.png
+__PAGE_IMG__:.page_cache/资产管理流程/page_05.png
 
 二、无形资产管理
 
@@ -143,7 +143,7 @@ ALPD
 
 ## 第6页
 
-__PAGE_IMG__:/home/jjh/works/RAG_Projects/Agentic_RAG/knowledge_base/.page_cache/资产管理流程/page_06.png
+__PAGE_IMG__:.page_cache/资产管理流程/page_06.png
 
 APPOTRONICS®
 二、固定资产管理
@@ -166,7 +166,7 @@ ALPD®
 
 ## 第7页
 
-__PAGE_IMG__:/home/jjh/works/RAG_Projects/Agentic_RAG/knowledge_base/.page_cache/资产管理流程/page_07.png
+__PAGE_IMG__:.page_cache/资产管理流程/page_07.png
 
 APPOTRONICS
 1、资产申请
@@ -219,7 +219,7 @@ ALPD
 
 ## 第8页
 
-__PAGE_IMG__:/home/jjh/works/RAG_Projects/Agentic_RAG/knowledge_base/.page_cache/资产管理流程/page_08.png
+__PAGE_IMG__:.page_cache/资产管理流程/page_08.png
 
 APPOTRONICS
 1、资产申请
@@ -273,7 +273,7 @@ ALPD
 
 ## 第9页
 
-__PAGE_IMG__:/home/jjh/works/RAG_Projects/Agentic_RAG/knowledge_base/.page_cache/资产管理流程/page_09.png
+__PAGE_IMG__:.page_cache/资产管理流程/page_09.png
 
 APPOTRONICS®
 2、资产调拨
@@ -301,7 +301,7 @@ ALPD®
 
 ## 第10页
 
-__PAGE_IMG__:/home/jjh/works/RAG_Projects/Agentic_RAG/knowledge_base/.page_cache/资产管理流程/page_10.png
+__PAGE_IMG__:.page_cache/资产管理流程/page_10.png
 
 APPOTRONICS®
 3、跨组织资产调拨
@@ -334,7 +334,7 @@ ALPD®
 
 ## 第11页
 
-__PAGE_IMG__:/home/jjh/works/RAG_Projects/Agentic_RAG/knowledge_base/.page_cache/资产管理流程/page_11.png
+__PAGE_IMG__:.page_cache/资产管理流程/page_11.png
 
 APPOTRONICS®
 4、资产盘点
@@ -384,7 +384,7 @@ ALPD®
 
 ## 第12页
 
-__PAGE_IMG__:/home/jjh/works/RAG_Projects/Agentic_RAG/knowledge_base/.page_cache/资产管理流程/page_12.png
+__PAGE_IMG__:.page_cache/资产管理流程/page_12.png
 
 APPOTRONICS
 5、资产处置
@@ -416,7 +416,7 @@ ALPD
 
 ## 第13页
 
-__PAGE_IMG__:/home/jjh/works/RAG_Projects/Agentic_RAG/knowledge_base/.page_cache/资产管理流程/page_13.png
+__PAGE_IMG__:.page_cache/资产管理流程/page_13.png
 
 APPOTRONICS®
 5、资产处置
@@ -442,7 +442,7 @@ ALPD®
 
 ## 第14页
 
-__PAGE_IMG__:/home/jjh/works/RAG_Projects/Agentic_RAG/knowledge_base/.page_cache/资产管理流程/page_14.png
+__PAGE_IMG__:.page_cache/资产管理流程/page_14.png
 
 APPOTRONICS®
 三、非固资管理
@@ -482,7 +482,7 @@ ALPD®
 
 ## 第15页
 
-__PAGE_IMG__:/home/jjh/works/RAG_Projects/Agentic_RAG/knowledge_base/.page_cache/资产管理流程/page_15.png
+__PAGE_IMG__:.page_cache/资产管理流程/page_15.png
 
 APPOTRONICS
 1、非固资申请
@@ -505,7 +505,7 @@ ALPD
 
 ## 第16页
 
-__PAGE_IMG__:/home/jjh/works/RAG_Projects/Agentic_RAG/knowledge_base/.page_cache/资产管理流程/page_16.png
+__PAGE_IMG__:.page_cache/资产管理流程/page_16.png
 
 APPOTRONICS
 2、非固资领用
@@ -533,7 +533,7 @@ ALPD
 
 ## 第17页
 
-__PAGE_IMG__:/home/jjh/works/RAG_Projects/Agentic_RAG/knowledge_base/.page_cache/资产管理流程/page_17.png
+__PAGE_IMG__:.page_cache/资产管理流程/page_17.png
 
 APPOTRONICS
 3、非固资台账管理
@@ -569,7 +569,7 @@ ALPD
 
 ## 第18页
 
-__PAGE_IMG__:/home/jjh/works/RAG_Projects/Agentic_RAG/knowledge_base/.page_cache/资产管理流程/page_18.png
+__PAGE_IMG__:.page_cache/资产管理流程/page_18.png
 
 APPOTRONICS®
 4、非固资转移
@@ -606,7 +606,7 @@ ALPD®
 
 ## 第19页
 
-__PAGE_IMG__:/home/jjh/works/RAG_Projects/Agentic_RAG/knowledge_base/.page_cache/资产管理流程/page_19.png
+__PAGE_IMG__:.page_cache/资产管理流程/page_19.png
 
 APPOTRONICS
 5、非固资报废
@@ -642,7 +642,7 @@ ALPD
 
 ## 第20页
 
-__PAGE_IMG__:/home/jjh/works/RAG_Projects/Agentic_RAG/knowledge_base/.page_cache/资产管理流程/page_20.png
+__PAGE_IMG__:.page_cache/资产管理流程/page_20.png
 
 APPOTRONICS® 固定资产管理总结
 
@@ -667,7 +667,7 @@ ALPD®
 
 ## 第21页
 
-__PAGE_IMG__:/home/jjh/works/RAG_Projects/Agentic_RAG/knowledge_base/.page_cache/资产管理流程/page_21.png
+__PAGE_IMG__:.page_cache/资产管理流程/page_21.png
 
 THANKS!
 

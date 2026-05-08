@@ -256,6 +256,68 @@ class TestParseQuery:
         assert result["needs_clarification"] is False
 
 
+# ── 区域无关问题的兜底纠正测试 ────────────────────────────────────────────────
+
+class TestRegionIndependentFallback:
+    """相对调整/流程/共享规则类 query：即使 LLM 误判 needs_clarification=True，兜底也应撤销追问。"""
+
+    def test_relative_adjustment_query_overrides_clarification(self):
+        """TE31 复现：'同性别2人住宿如何调整'，命中关键词应被兜底纠正"""
+        mock_response = make_llm_response(
+            who="其他员工", who_inferred=True,
+            where=None, where_inferred=False,
+            what="住宿标准调整规则",
+            missing=["where"], needs_clarification=True,
+            expanded="普通员工同性别2人出差同一地点的住宿标准如何调整",
+        )
+        with patch("query_understanding.call_llm", return_value=mock_response):
+            result = parse_query("普通员工同性别2人出差同一地点，住宿标准如何调整？")
+        assert result["needs_clarification"] is False
+        assert "where" not in result["missing"]
+
+    def test_process_query_overrides_clarification(self):
+        """流程/凭证类：'住宿发票丢了怎么办' 命中关键词应被兜底纠正"""
+        mock_response = make_llm_response(
+            who="其他员工", who_inferred=True,
+            where=None, where_inferred=False,
+            what="住宿发票处理流程",
+            missing=["where"], needs_clarification=True,
+            expanded="住宿发票丢失如何处理",
+        )
+        with patch("query_understanding.call_llm", return_value=mock_response):
+            result = parse_query("住宿发票丢了怎么办？")
+        assert result["needs_clarification"] is False
+        assert "where" not in result["missing"]
+
+    def test_only_missing_who_and_where_still_overrides(self):
+        """兜底允许同时缺 who（who 有默认值），不影响纠正"""
+        mock_response = make_llm_response(
+            who=None, who_inferred=False,
+            where=None, where_inferred=False,
+            what="出差申请审批流程",
+            missing=["who", "where"], needs_clarification=True,
+            expanded="出差申请审批流程",
+        )
+        with patch("query_understanding.call_llm", return_value=mock_response):
+            result = parse_query("出差申请审批流程是怎样的？")
+        assert result["needs_clarification"] is False
+        assert "where" not in result["missing"]
+
+    def test_pure_amount_query_still_asks_clarification(self):
+        """反向用例：'住宿费标准是多少' 不含区域无关关键词，仍然追问 Where"""
+        mock_response = make_llm_response(
+            who="其他员工", who_inferred=True,
+            where=None, where_inferred=False,
+            what="住宿费标准",
+            missing=["where"], needs_clarification=True,
+            expanded="出差住宿费标准是多少",
+        )
+        with patch("query_understanding.call_llm", return_value=mock_response):
+            result = parse_query("住宿费标准是多少？")
+        assert result["needs_clarification"] is True
+        assert "where" in result["missing"]
+
+
 # ── build_clarification_question 测试 ────────────────────────────────────────
 
 class TestBuildClarificationQuestion:
