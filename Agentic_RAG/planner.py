@@ -27,7 +27,13 @@ _PLAN_PROMPT_TEMPLATE = """\
 5. depends_on 填写依赖的 step_id，无依赖填 null
 6. 【重要】选择 Skill 时以实体类型为依据，而非具体实体值。例：看到【地区名】应想到需要查地区分类规则，而不是直接搜城市名
 7. 【重要】若存在约束条件（时间/场景），必须将约束词带入每个检索步骤的 query 中
-8. 只输出 JSON，不要有任何其他文字
+8. 【重要·系统名 vs 业务动作】当 query 同时包含『系统名』（如 OA / HR系统 / ERP / PLM / JIRA / CRM / FIS）
+   和『业务动作』（如 出差申请 / 报销审批 / 请假 / 考勤打卡 / 物料申请 / 合同审批 等），
+   必须按【业务动作】选 Skill，而不是按【系统名】。
+   系统名只表示"在哪个系统里操作"，业务知识在对应业务域 Skill；IT 指引 Skill 只覆盖账号/登录/密码/网络等基础设施层。
+   反例：『OA系统出差申请流程』——业务动作是"出差申请"，应选报销/差旅 Skill，而不是因为出现"OA"就选 IT 指引 Skill。
+9. 【重要·datasheet/芯片手册】当问题包含 DLPC、datasheet、芯片型号、oscillator、clock、PLL、timing、electrical characteristics、MHz/ns/ppm/V/mA 等硬件规格词时，优先选择 search_datasheet；不要把 DLPC 文档按企业制度 Skill 处理。
+10. 只输出 JSON，不要有任何其他文字
 {query_context}
 输出格式：
 {{

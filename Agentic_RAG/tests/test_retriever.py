@@ -18,6 +18,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from unittest.mock import patch, MagicMock
 import pytest
+import types
+import hashlib
 
 from retriever import Retriever, _rrf_merge
 
@@ -205,14 +207,106 @@ class TestSearchRouting:
     def test_routes_to_vector(self):
         with patch.object(self.retriever, "vector_search", return_value=[]) as mock:
             self.retriever.search("query", method="vector", top_k=3)
-            mock.assert_called_once_with("query", 3)
+            mock.assert_called_once_with("query", 3, where=None)
 
     def test_routes_to_hybrid(self):
         with patch.object(self.retriever, "hybrid_search", return_value=[]) as mock:
             self.retriever.search("query", method="hybrid", top_k=3)
-            mock.assert_called_once_with("query", 3)
+            mock.assert_called_once_with("query", 3, where=None)
 
     def test_defaults_to_vector_for_unknown_method(self):
         with patch.object(self.retriever, "vector_search", return_value=[]) as mock:
             self.retriever.search("query", method="unknown", top_k=3)
             mock.assert_called_once()
+
+
+class _FakeCollection:
+    def __init__(self, existing_ids=None):
+        self.add_calls = []
+        self._ids = set(existing_ids or [])
+
+    def add(self, documents, ids, metadatas):
+        self.add_calls.append({
+            "documents": documents,
+            "ids": ids,
+            "metadatas": metadatas,
+        })
+        self._ids.update(ids)
+
+    def get(self, ids=None, include=None):
+        matched = [i for i in (ids or []) if i in self._ids]
+        return {"ids": matched}
+
+    def count(self):
+        return len(self._ids)
+
+
+class _FakeClient:
+    def __init__(self, existing_ids=None):
+        self.collection = _FakeCollection(existing_ids=existing_ids)
+        self.deleted = []
+        self.created = []
+
+    def delete_collection(self, name):
+        self.deleted.append(name)
+
+    def create_collection(self, **kwargs):
+        self.created.append(kwargs)
+        return self.collection
+
+    def get_or_create_collection(self, **kwargs):
+        self.created.append(kwargs)
+        return self.collection
+
+
+def test_build_index_adds_chunks_in_batches_and_logs_progress(monkeypatch, capsys):
+    """大知识库索引应分批 add，并输出 flush 进度，避免页面黑盒卡住。"""
+    fake_client = _FakeClient()
+    fake_chromadb = types.SimpleNamespace(EphemeralClient=lambda: fake_client)
+    monkeypatch.setitem(sys.modules, "chromadb", fake_chromadb)
+    monkeypatch.setattr("retriever._build_embedding_fn", lambda: None)
+    monkeypatch.setattr("retriever.INDEX_BATCH_SIZE", 2)
+    monkeypatch.setattr("retriever.PERSIST_CHROMA_INDEX", False)
+
+    chunks = [make_chunk(f"chunk {i}", index=i) for i in range(5)]
+    retriever = Retriever(chunks)
+
+    retriever.build_index()
+
+    assert [len(call["ids"]) for call in fake_client.collection.add_calls] == [2, 2, 1]
+    out = capsys.readouterr().out
+    assert "原始索引进度：1-2/5" in out
+    assert "原始索引进度：3-4/5" in out
+    assert "原始索引建立完成，共 5 条" in out
+
+
+def test_build_index_skips_already_indexed_chunk_hashes(monkeypatch, capsys):
+    """持久化索引已存在的 chunk hash 不应重复 embedding/add。"""
+    existing_text = "chunk 0"
+    existing_chunk = make_chunk(existing_text, index=0)
+    existing_id = "chunk_" + hashlib.md5(
+        f"{existing_chunk['source']}\n{existing_chunk['chunk_index']}\n{existing_chunk['text']}".encode()
+    ).hexdigest()
+    fake_client = _FakeClient(existing_ids=[existing_id])
+    fake_chromadb = types.SimpleNamespace(
+        EphemeralClient=lambda: fake_client,
+        PersistentClient=lambda path: fake_client,
+    )
+    monkeypatch.setitem(sys.modules, "chromadb", fake_chromadb)
+    monkeypatch.setattr("retriever._build_embedding_fn", lambda: None)
+    monkeypatch.setattr("retriever.INDEX_BATCH_SIZE", 2)
+    monkeypatch.setattr("retriever.PERSIST_CHROMA_INDEX", True)
+
+    retriever = Retriever([make_chunk("chunk 0", index=0), make_chunk("chunk 1", index=1)])
+
+    retriever.build_index()
+
+    assert fake_client.deleted == []
+    assert len(fake_client.collection.add_calls) == 1
+    assert fake_client.collection.add_calls[0]["documents"] == ["chunk 1"]
+    assert fake_client.collection.add_calls[0]["ids"] == [
+        "chunk_" + hashlib.md5("test.md\n1\nchunk 1".encode()).hexdigest()
+    ]
+    out = capsys.readouterr().out
+    assert "跳过已存在索引：1/2" in out
+    assert "新增索引建立完成，共 1 条" in out

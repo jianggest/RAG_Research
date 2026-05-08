@@ -18,7 +18,8 @@ import re
 from pathlib import Path
 from typing import TypedDict
 
-from config import CHUNK_SIZE
+from config import CHUNK_SIZE, DATASHEET_SOURCES
+from retriever import extract_datasheet_entity_tokens, normalize_datasheet_text
 
 
 class Chunk(TypedDict):
@@ -26,6 +27,10 @@ class Chunk(TypedDict):
     chunk_index: int
     text: str
     is_table: bool
+    is_datasheet: bool
+    index_kind: str
+    normalized_text: str
+    entity_tokens: list[str]
 
 
 # ── PDF 转换 ──────────────────────────────────────────────────────────────────
@@ -117,11 +122,20 @@ def _with_heading(heading: str, block: str) -> str:
 
 
 def _build_chunk(text: str, source: str, index: int) -> Chunk:
+    stripped = text.strip()
+    is_datasheet = source in DATASHEET_SOURCES
+    normalized_text = normalize_datasheet_text(stripped) if is_datasheet else re.sub(r"\s+", " ", stripped)
     return Chunk(
         source=source,
         chunk_index=index,
-        text=text.strip(),
-        is_table=text.strip().startswith("|"),
+        text=stripped,
+        # 表格 chunk 可能带有前置标题（例如 datasheet 的 "## 6.10 ..."），
+        # 不能只判断首字符，否则表格 boost 会失效。
+        is_table=any(line.strip().startswith("|") for line in stripped.splitlines()),
+        is_datasheet=is_datasheet,
+        index_kind="block",
+        normalized_text=normalized_text,
+        entity_tokens=extract_datasheet_entity_tokens(stripped) if is_datasheet else [],
     )
 
 

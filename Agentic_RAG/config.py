@@ -35,3 +35,26 @@ OPENAI_OPTIONS = {"temperature": 0}
 # True  → 首次启动时调用 LLM 生成，结果缓存到 knowledge_base/.question_cache.json
 # False → 跳过增强，适合快速调试
 AUGMENT_QUESTIONS = True
+
+# Datasheet source 白名单：用于保守清洗、chunk metadata 标记和后续跳过增强索引。
+# Phase 0 只纳入 DLPC3436；Phase 1 之后再扩展 DLPC3437 等同系列手册。
+DATASHEET_SOURCES: set[str] = {
+    "dlpc3436.pdf",
+    "dlpc3436.md",
+    "dlpc3436_clean.md",
+    "HDMI2.0.pdf",
+    "HDMI2.0.md",
+    "HDMI2.0_clean.md",
+    "HDMI_1.4(1).pdf",
+    "HDMI_1.4(1).md",
+    "HDMI_1.4(1)_clean.md",
+    "HDMI 2.1b Specification.pdf",
+    "HDMI 2.1b Specification.md",
+    "HDMI 2.1b Specification_clean.md",
+    "DVI_1.0.pdf",
+    "DVI_1.0.md",
+    "DVI_1.0_clean.md",
+    "EIA-CEA-861-D.pdf",
+    "EIA-CEA-861-D.md",
+    "EIA-CEA-861-D_clean.md",
+}

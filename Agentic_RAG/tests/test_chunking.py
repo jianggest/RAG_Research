@@ -55,6 +55,13 @@ class TestTableIntegrity:
         chunks = chunk_markdown(content, "test.md", max_size=600)
         assert all(c["is_table"] for c in chunks)
 
+    def test_table_with_heading_is_flagged(self):
+        """带前置标题的表格 chunk 也应标记为 is_table=True（datasheet 表格常见形态）"""
+        content = "## 6.10 System Oscillator Timing Requirements\n\n| 参数 | MIN | MAX |\n|------|-----|-----|\n| f clk | 23.998 | 24.002 |"
+        chunks = chunk_markdown(content, "dlpc3436.md", max_size=600)
+        assert len(chunks) == 1
+        assert chunks[0]["is_table"] is True
+
     def test_non_table_chunk_is_not_flagged(self):
         """普通文本 chunk 的 is_table 字段应为 False"""
         content = "这是一段普通文本，没有表格。"

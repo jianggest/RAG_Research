@@ -12,6 +12,12 @@ pip install -r requirements.txt
 
 # 启动前端（Ollama 需提前运行）
 streamlit run app.py
+#后台启动
+nohup streamlit run app.py --server.address 0.0.0.0 --server.port 8501 > demo.log 2>&1 &
+
+# v3.0：大知识库建议先离线构建/更新持久化索引，再启动前端
+.venv/bin/python tasks/run_persistent_index.py >> demo.log 2>&1
+streamlit run app.py --server.port 8501
 
 # 运行单元测试
 pytest tests/ -v --ignore=tests/integration
@@ -43,10 +49,22 @@ pip install sentence-transformers
 
 ### LLM 模型（推理与生成）
 
-| 配置值 | 说明 |
-|--------|------|
+通过 `LLM_BACKEND` 选择后端：
+
+| `LLM_BACKEND` | 说明 |
+|---------------|------|
+| `"ollama"` | 本地推理，无外部依赖，适合内网部署。模型名通过 `OLLAMA_MODEL` 配置 |
+| `"openai"` | 调用 OpenAI 兼容协议网关（含自建反向代理）。通过 `OPENAI_BASE_URL` / `OPENAI_API_KEY` / `OPENAI_MODEL` 配置 |
+| `"none"` | 跳过 LLM 调用，仅用于检索调试 |
+
+**Ollama 可选模型：**
+
+| `OLLAMA_MODEL` | 说明 |
+|----------------|------|
 | `"qwen3.6:35b-a3b-q4_K_M"` | ✅ 推荐，支持视觉理解，对中文提示词理解更准确，分类推断误判率显著降低 |
 | `"gemma4"` | 备选，需设置 `think=False` |
+
+> ⚠️ `OPENAI_API_KEY` 当前以明文形式存放在 `config.py`，**不要将含密钥的 `config.py` 提交到公共仓库**。建议改为 `os.getenv("OPENAI_API_KEY")` 读取（已记录为待办 R-5）。
 
 ---
 
@@ -102,6 +120,7 @@ knowledge_base/
      │ retriever.build_index()                                          │
      │ BGE-M3 Embedding → ChromaDB（含 original_text 存入 metadata）    │
      │ BM25 基于原始文本构建本地倒排索引                                   │
+     │ v3.0：Chroma 持久化到 .chroma_index，按 chunk hash 增量跳过已索引内容 │
      └──────────────────────────────┬──────────────────────────────────┘
                                     │
                                     ▼
@@ -171,6 +190,7 @@ Agentic_RAG/
 ├── pdf_vision_loader.py        # 图片型 PDF 视觉解析（逐页截图 → Ollama 视觉模型提取文字）
 ├── pdf_vision_qa.py            # PDF 视觉直答（图片缓存 + 看图回答，供前端展示原始页面）
 ├── run_vision_extract.py       # 一次性脚本：视觉提取结果写入 _clean.md（图片型 PDF 预处理）
+├── tasks/run_persistent_index.py # v3.0：离线构建/增量更新 Chroma 持久化索引
 ├── test_pdf_render.py          # 调试脚本：PDF 页面渲染为图片，验证截图清晰度
 ├── llm.py                      # LLM 调用封装
 ├── utils.py                    # 工具函数（实体抽取、表格清洗、LLM 分类）
@@ -336,7 +356,50 @@ LLM 兜底判断（llm_classify_region）
 
 生成结果持久化到 `knowledge_base/.question_cache.json`，缓存键为 chunk MD5，重启直接复用。`config.py` 中 `AUGMENT_QUESTIONS = True` 开启。
 
+> v3.0 备注：当前大知识库启动链路中 `AUGMENT_QUESTIONS = False`，先保证 6270+ chunks 的基础索引可稳定启动；如后续恢复增强问题生成，建议先通过 `AUGMENT_MAX_CHUNKS` 限流，或改为离线/后台增量任务。
+
 这一步很关键，能够让Chunk更容易的和自然语言对接上。
+
+### v3.0 大知识库索引持久化与增量构建
+
+v3.0 解决新增大规格书后页面长时间停留在“加载知识库”的问题。核心变化：
+
+1. **分批写入 Chroma**：`INDEX_BATCH_SIZE = 16`，每批打印范围式进度，避免一次性 add 数千 chunks 时长时间无日志。
+2. **Chroma 持久化**：`PERSIST_CHROMA_INDEX = True`，索引写入 `.chroma_index/`，重启不再清空 collection。
+3. **chunk hash 增量跳过**：基于 `source + chunk_index + normalized_text/text` 生成稳定 ID，已存在 chunk 不再重复 embedding。
+4. **离线构建入口**：首次大规模索引建议先运行 `tasks/run_persistent_index.py`，再启动 Streamlit。
+5. **启动期增强关闭**：当前关闭 `AUGMENT_QUESTIONS`，避免数千 chunk 串行调用 LLM 生成增强问题。
+
+首次/增量构建命令：
+
+```bash
+.venv/bin/python tasks/run_persistent_index.py >> demo.log 2>&1
+```
+
+验证命令：
+
+```bash
+.venv/bin/python -m pytest tests/test_retriever.py -q
+curl -sS -D - -o /tmp/agentic_rag_8501.html http://127.0.0.1:8501/
+grep -Ei 'traceback|exception|error|failed|runtimeerror|module' demo.log
+```
+
+本次验证结果：
+
+```text
+24 passed in 0.05s
+[IndexRunner] loaded chunks=6270
+[Retriever] 原始新增索引建立完成，共 6270 条；总 chunks 6270 条
+.chroma_index = 56M
+HTTP/1.1 200 OK
+[Retriever] 原始跳过已存在索引：6270/6270
+[Retriever] 原始索引无新增，共 6270 条
+[Retriever] 原始新增索引建立完成，共 0 条；总 chunks 6270 条
+```
+
+处理过程记录见：`tasks/large_kb_indexing_scalability.md`。
+
+注意：持久化模式下已有 collection 不要再次传入新的 `embedding_function`，否则 Chroma 会报 embedding function conflict；当前 `retriever.py` 已按持久化/非持久化模式区分处理。
 
 ### 伞形概念扩写（_CONCEPT_MAP）
 
@@ -364,10 +427,18 @@ LLM 兜底判断（llm_classify_region）
 | `CHUNK_SIZE` | `600` | chunk 最大字符数 |
 | `TOP_K` | `5` | 检索返回条数 |
 | `EMBEDDING_MODEL` | `"BAAI/bge-m3"` | Embedding 模型 |
-| `LLM_BACKEND` | `"ollama"` | `"ollama"` 或 `"none"` |
+| `LLM_BACKEND` | `"openai"` | `"ollama"` / `"openai"` / `"none"` |
 | `OLLAMA_MODEL` | `"qwen3.6:35b-a3b-q4_K_M"` | Ollama 模型名（支持视觉理解） |
 | `OLLAMA_OPTIONS` | `{"num_ctx": 4096, "temperature": 0}` | `temperature=0` 消除随机性 |
-| `AUGMENT_QUESTIONS` | `True` | 是否生成增强索引；`False` 跳过，适合快速调试 |
+| `OPENAI_BASE_URL` | `"https://aicode.wewell.net/v1"` | OpenAI 兼容协议网关地址 |
+| `OPENAI_API_KEY` | （明文，部署前替换） | API 密钥；建议改为环境变量读取（待办 R-5）|
+| `OPENAI_MODEL` | `"gpt-5.4"` | 网关侧的模型路由名 |
+| `OPENAI_OPTIONS` | `{"temperature": 0}` | OpenAI Chat Completions 参数 |
+| `AUGMENT_QUESTIONS` | `False` | v3.0 当前关闭启动期增强问题生成；避免大知识库首次加载串行调用 LLM |
+| `AUGMENT_MAX_CHUNKS` | `None` | 增强问题生成上限；恢复增强时可先限流 |
+| `INDEX_BATCH_SIZE` | `16` | v3.0 Chroma 分批写入大小；范围式日志便于观察进度 |
+| `PERSIST_CHROMA_INDEX` | `True` | v3.0 启用 Chroma 持久化，避免每次启动全量 embedding |
+| `CHROMA_PERSIST_DIR` | `.chroma_index` | v3.0 Chroma 持久化索引目录 |
 
 ---
 
@@ -440,6 +511,79 @@ LLM 兜底判断（llm_classify_region）
 
 ---
 
+### 问题八：表格合并单元格在 PDF→Markdown 转换时丢失（TE8）
+
+**问题**：报销标准表中"销售人员/非销售人员 出差补贴"原本是合并单元格（A/B/C 类地区共用同一金额），Docling 输出 Markdown 时拆成两份分配到 B/C 列，A 列被分类标签"销售人员"占用，导致**深圳（A 类）销售人员的金额数据完全丢失**。LLM 看到残缺数据，给出"未明确金额"的错误回答。
+
+**根因**：Markdown 表格语法不支持 `colspan/rowspan`，Docling `export_to_markdown()` 必须做信息降维，对合并行的处理是错位填充。
+
+**当前缓解**：识别根因，已记录到 `tasks/known_risks.md`。**临时方案**是手工修复 `报销相关_clean.md` 该段表格；**治本方案**是绕过 `export_to_markdown()`，自定义渲染器读取 `DoclingDocument` 的 `col_span/row_span` 信息后展开复制（待办 R-1）。
+
+---
+
+### 问题九：Markdown 标题层级误用导致父语境丢失（TE20）
+
+**问题**：用户问"总部到坪山往返班车的发车时间"，模型答出错误时间（来自另一段"坪山到总部摆渡车"表格）。GT 答案在 `OA新员工-行政指引2025.7.7 _clean.md` 的"早班车 07:30 / 晚班车 20:00"片段，但该 chunk 始终未被召回。
+
+**根因**：原文档把"早班车："、"晚班车："和父标题"总部到坪山往返班车"**误用为同级 H2 标题**。`document_loader.chunk_markdown` 按 `re.split(r"(?=\n#{1,3} )", ...)` 切节后，"早班车 07:30" 被切成独立 chunk，**自身不含"总部"、"坪山"任何字样**，向量与 BM25 都无法召回。同时段 B "## 8、坪山到总部摆渡车 + 表格" 完整命中关键词且被 `_boost_table_chunks` ×1.5 提分，最终覆盖正确答案。
+
+**当前缓解**：识别根因，已记录到 `tasks/known_risks.md`。**临时方案**是把误用的 H2 子标题改为粗体行内或 H3；**治本方案**是 chunker 引入"标题栈注入"，每个 chunk 入库前前置当前所有活跃高级标题，使父语境永远跟随（待办 R-2）。
+
+---
+
+### 问题十：系统名 vs 业务动作的路由消歧（TE25）
+
+**问题**：用户问"OA 系统出差申请和审批流程是什么？"，Planner 路由到 `search_it_guide`（IT 指引），但该域只覆盖 OA 账号/密码/登录，没有出差业务流程。正确答案在 `报销相关_clean.md` 的"5.4.5. 差旅费报销制度及审批流程"，应路由到 `search_expense_reimbursement`。
+
+**根因**：`search_it_guide` 的 description 把【OA】列为关键词，但 IT 指引文档**只覆盖 OA 接入层**（账号/登录/密码），不覆盖 OA 上承载的业务流程。Planner LLM 看到 query 含"OA"就直接命中 IT 指引，是 **Skill 描述与文档实际覆盖范围错位**。
+
+**解决方案**：
+1. **Skill 描述精修**：`search_it_guide.SKILL_META.description` 限定到"接入层"，并显式排除"业务流程"；`search_expense_reimbursement.SKILL_META.description` 拆成"数值/标准类"+"流程类"两路，明确"OA/HR 等系统名出现也走本 Skill"。
+2. **Planner Prompt 增加路由消歧规则**：`planner._PLAN_PROMPT_TEMPLATE` 新增规则 8——"系统名 vs 业务动作"，附 TE25 反例，要求 Planner 按业务动作选 Skill，不被系统名锚定。
+
+---
+
+### 问题十一：Where 缺失判断过粗导致过度澄清（TE31）
+
+**问题**：用户问"普通员工同性别 2 人出差同一地点，住宿标准如何调整？"，模型反问"您要查询的是哪个城市/地区的标准？"——但调整规则（+100 元/天）全国统一，与具体地区无关。
+
+**根因**：`query_understanding._PARSE_PROMPT` 中 Where 缺失判断只有一条规则——"该问题的答案是否会因城市/地区不同而不同？" 过于粗糙。LLM 看到"住宿"关键词就关联到"差旅标准因地区而异"，触发 `needs_clarification=true`。该判断没区分"绝对金额（按地区分级）"与"相对调整/流程/共享规则（全国统一）"。
+
+**解决方案**：
+1. **Prompt 决策树细化**：Where 缺失判断改为 5 步顺序判断，先排除"相对调整/流程/共享规则/统一适用"四类区域无关问题，最后才触发追问。
+2. **关键词兜底**：`parse_query` 末尾增加 `_looks_region_independent` 检测——命中"调整/流程/同性别/同地点/发票/丢失"等区域无关关键词时，强制撤回 `needs_clarification`。
+3. **回归测试**：`tests/test_query_understanding.py::TestRegionIndependentFallback` 新增 4 条用例覆盖 TE31 同款、流程类、who+where 同缺允许兜底、纯金额 query 不被误伤。
+
+---
+
+### v3.0：大知识库索引持久化与增量构建
+
+**问题**：新增 DVI / CEA / HDMI 多个大规格书后，知识库规模达到 6270 chunks。旧实现每次启动都一次性向 Chroma add 全量 chunks，Streamlit 页面长时间停留在“加载知识库”，日志无推进；仅改为分批后仍会重复全量 embedding，扩展性不足。
+
+**解决方案**：
+1. `retriever.py` 改为分批写入 Chroma，`INDEX_BATCH_SIZE = 16`，每批输出 `1-16/6270` 这类范围式进度。
+2. 启用 `chromadb.PersistentClient(path=".chroma_index")`，持久化索引目录为 `.chroma_index/`。
+3. 基于 `source + chunk_index + normalized_text/text` 生成 chunk hash ID，已存在 ID 直接跳过，只对新增/变化 chunk 做 embedding。
+4. 新增 `tasks/run_persistent_index.py`，支持在 Streamlit 外离线构建/更新大索引。
+5. 暂时关闭 `AUGMENT_QUESTIONS`，避免启动期对数千 chunks 串行调用 LLM；后续恢复时应改为离线/后台增量任务。
+6. 修复 Chroma 持久化 collection 的 `embedding_function` 冲突：持久化模式下 `get_or_create_collection()` 不再传新的 embedding function。
+
+**验证**：
+```text
+.venv/bin/python -m pytest tests/test_retriever.py -q -> 24 passed in 0.05s
+首次离线索引：6270 chunks 完成，.chroma_index = 56M
+重启后日志：原始跳过已存在索引：6270/6270；新增 0 条
+curl http://127.0.0.1:8501/ -> HTTP/1.1 200 OK
+```
+
+详细过程记录：`tasks/large_kb_indexing_scalability.md`。
+
+---
+
 ## 架构演进记录
 
 详见 [PLAN.md](./PLAN.md)，记录了从 v1.0 到 v2.0 的设计决策、方案对比和关键取舍。
+
+## 已知风险与待办
+
+详见 [tasks/known_risks.md](./tasks/known_risks.md)，记录由近期失败用例（TE8 / TE20 / TE25 / TE31）和 OpenAI 通道接入引出的待治本风险（R-1 ~ R-8）。已按"风险高 + 改动小"优先级排序。

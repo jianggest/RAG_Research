@@ -19,6 +19,7 @@ from unittest.mock import patch
 from query_understanding import (
     QueryStructure,
     _fallback_structure,
+    _looks_technical_datasheet_query,
     _normalize,
     _parse_llm_response,
     build_clarification_question,
@@ -144,6 +145,17 @@ class TestFallbackStructure:
 # ── parse_query 完整流程测试（Mock LLM）──────────────────────────────────────
 
 class TestParseQuery:
+
+    def test_datasheet_query_bypasses_enterprise_dimension_clarification(self):
+        """DLPC/datasheet 技术问题不应按企业政策维度追问 who/where。"""
+        with patch("query_understanding.call_llm") as mock_llm:
+            result = parse_query("系统 Oscillator Timing 要求？")
+
+        mock_llm.assert_not_called()
+        assert result["domain"] == "technical_datasheet"
+        assert result["needs_clarification"] is False
+        assert result["missing"] == []
+        assert result["dimensions"]["what"]["value"] == "系统 Oscillator Timing 要求？"
 
     def test_shenzhen_identifies_where_and_what(self):
         """深圳出差住宿费：Where=深圳，What=住宿费，Who 为推断值"""
@@ -316,6 +328,14 @@ class TestRegionIndependentFallback:
             result = parse_query("住宿费标准是多少？")
         assert result["needs_clarification"] is True
         assert "where" in result["missing"]
+
+
+class TestTechnicalDatasheetDetection:
+    def test_detects_dlpc_and_timing_terms(self):
+        assert _looks_technical_datasheet_query("DLPC3436 System Oscillator Timing 要求？") is True
+
+    def test_does_not_detect_enterprise_it_system_query(self):
+        assert _looks_technical_datasheet_query("OA系统出差申请流程") is False
 
 
 # ── build_clarification_question 测试 ────────────────────────────────────────

@@ -22,6 +22,7 @@ from collections import Counter
 from pathlib import Path
 
 from llm import call_llm
+from config import DATASHEET_SOURCES
 
 
 # ── 固定规则：无需 LLM 确认，直接删除 ────────────────────────────────────────
@@ -40,6 +41,30 @@ _VERSION_RE = re.compile(r"^V\d+\.\d+$")
 
 # "文件编号" 独立行（PDF 表格被切断产生的碎片）
 _FILE_NO_LABEL_RE = re.compile(r"^(?:文\s*件\s*编\s*号|版\s*本)$")
+
+_DATASHEET_HINTS = (
+    "datasheet",
+    "data sheet",
+    "dlpc",
+    "electrical characteristics",
+    "timing requirements",
+    "pin configuration",
+    "recommended operating conditions",
+)
+
+
+def _is_datasheet_document(md_path: Path, content: str) -> bool:
+    """判断是否为 datasheet/硬件规格书。datasheet 的 NOTE/脚注/表格行都是有效证据。"""
+    if md_path.name in DATASHEET_SOURCES:
+        return True
+    haystack = f"{md_path.name}\n{content[:12000]}".lower()
+    return any(hint in haystack for hint in _DATASHEET_HINTS)
+
+
+def _clean_datasheet_content(content: str) -> str:
+    """datasheet 专用保守清洗：只删除显式图片占位符并规整空行。"""
+    lines = [line for line in content.splitlines() if line.strip() != _IMAGE_LINE]
+    return _post_process("\n".join(lines))
 
 
 def _is_fixed_pollution(line: str) -> bool:
@@ -221,6 +246,15 @@ def _clean_single_document(md_path: Path, clean_path: Path) -> None:
     print(f"[Cleaner] 清洗: {md_path.name} → {clean_path.name}")
 
     content = md_path.read_text(encoding="utf-8")
+
+    if _is_datasheet_document(md_path, content):
+        print("[Cleaner]   检测到 datasheet，使用保守清洗（跳过通用 LLM/元信息清洗）")
+        cleaned = _clean_datasheet_content(content)
+        clean_path.write_text(cleaned, encoding="utf-8")
+        original_lines = len(content.splitlines())
+        cleaned_lines = len(cleaned.splitlines())
+        print(f"[Cleaner] 完成: {original_lines} 行 → {cleaned_lines} 行（减少 {original_lines - cleaned_lines} 行）")
+        return
 
     # Step 1：找出重复段落
     candidates = _find_candidates(content)
