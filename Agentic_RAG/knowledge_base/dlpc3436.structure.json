@@ -1,0 +1,1632 @@
+{
+  "schema_version": "0.1",
+  "source": "dlpc3436_clean.md",
+  "source_sha256": "a71748f822b2907416d19f841222f6137f676620e54432cbc9c2c98e3407c250",
+  "line_count": 1638,
+  "section_count": 120,
+  "sections": [
+    {
+      "line": 1,
+      "title": "1 Features",
+      "end_line": 35,
+      "keywords": [
+        "I 2 C",
+        "DMD",
+        "PMIC"
+      ],
+      "tables": [],
+      "notes": []
+    },
+    {
+      "line": 36,
+      "title": "DLPC3436 Display Controller",
+      "end_line": 37,
+      "keywords": [],
+      "tables": [],
+      "notes": []
+    },
+    {
+      "line": 38,
+      "title": "2 Applications",
+      "end_line": 47,
+      "keywords": [],
+      "tables": [],
+      "notes": []
+    },
+    {
+      "line": 48,
+      "title": "3 Description",
+      "end_line": 55,
+      "keywords": [
+        "DMD"
+      ],
+      "tables": [],
+      "notes": []
+    },
+    {
+      "line": 56,
+      "title": "Device Information  (1)",
+      "end_line": 67,
+      "keywords": [],
+      "tables": [
+        {
+          "start_line": 58,
+          "end_line": 60
+        }
+      ],
+      "notes": []
+    },
+    {
+      "line": 68,
+      "title": "Table of Contents",
+      "end_line": 120,
+      "keywords": [
+        "oscillator",
+        "I 2 C",
+        "PARKZ",
+        "VCC_INTF",
+        "DMD"
+      ],
+      "tables": [
+        {
+          "start_line": 70,
+          "end_line": 119
+        }
+      ],
+      "notes": []
+    },
+    {
+      "line": 121,
+      "title": "[www.ti.com](https://www.ti.com/)",
+      "end_line": 168,
+      "keywords": [
+        "oscillator",
+        "VCC_FLSH",
+        "I 2 C",
+        "HOST_IRQ",
+        "GPIO_08",
+        "VCC_INTF",
+        "DMD"
+      ],
+      "tables": [
+        {
+          "start_line": 123,
+          "end_line": 167
+        }
+      ],
+      "notes": []
+    },
+    {
+      "line": 169,
+      "title": "DLPC3436",
+      "end_line": 170,
+      "keywords": [],
+      "tables": [],
+      "notes": []
+    },
+    {
+      "line": 171,
+      "title": "[www.ti.com](https://www.ti.com/)",
+      "end_line": 196,
+      "keywords": [
+        "SPI flash",
+        "PARKZ",
+        "DMD"
+      ],
+      "tables": [
+        {
+          "start_line": 173,
+          "end_line": 195
+        }
+      ],
+      "notes": []
+    },
+    {
+      "line": 197,
+      "title": "5 Pin Configuration and Functions",
+      "end_line": 220,
+      "keywords": [
+        "VCC_FLSH",
+        "IIC0",
+        "HOST_IRQ",
+        "GPIO_08",
+        "PARKZ",
+        "VCC_INTF",
+        "DMD"
+      ],
+      "tables": [
+        {
+          "start_line": 201,
+          "end_line": 217
+        }
+      ],
+      "notes": [
+        {
+          "line": 219,
+          "text": "Note: The lower image view is from the top."
+        }
+      ]
+    },
+    {
+      "line": 221,
+      "title": "5.1 Test Pins and General Control",
+      "end_line": 250,
+      "keywords": [
+        "PARKZ",
+        "DMD"
+      ],
+      "tables": [
+        {
+          "start_line": 223,
+          "end_line": 243
+        }
+      ],
+      "notes": [
+        {
+          "line": 247,
+          "text": "(3) If the application design does not require an external pullup and there is no external logic that can overcome the weak internal pulldown, then the TSTPT I/O can be left open (unconnected) for normal operation. If operation does not call for an external pullup, but there is external logic that m"
+        },
+        {
+          "line": 249,
+          "text": "(4) See Table 5-1 for type definitions."
+        }
+      ]
+    },
+    {
+      "line": 251,
+      "title": "5.2 Parallel Port Input",
+      "end_line": 264,
+      "keywords": [],
+      "tables": [
+        {
+          "start_line": 253,
+          "end_line": 263
+        }
+      ],
+      "notes": []
+    },
+    {
+      "line": 265,
+      "title": "5.3 DSI Input Data and Clock",
+      "end_line": 273,
+      "keywords": [],
+      "tables": [
+        {
+          "start_line": 267,
+          "end_line": 272
+        }
+      ],
+      "notes": []
+    },
+    {
+      "line": 274,
+      "title": "5.4 DMD Reset and Bias Control",
+      "end_line": 283,
+      "keywords": [
+        "DMD"
+      ],
+      "tables": [
+        {
+          "start_line": 276,
+          "end_line": 282
+        }
+      ],
+      "notes": []
+    },
+    {
+      "line": 284,
+      "title": "5.5 DMD Sub-LVDS Interface",
+      "end_line": 291,
+      "keywords": [
+        "DMD"
+      ],
+      "tables": [
+        {
+          "start_line": 286,
+          "end_line": 290
+        }
+      ],
+      "notes": []
+    },
+    {
+      "line": 292,
+      "title": "5.6 Peripheral Interface",
+      "end_line": 311,
+      "keywords": [
+        "IIC0",
+        "I 2 C",
+        "HOST_IRQ",
+        "VCC_INTF",
+        "DMD"
+      ],
+      "tables": [
+        {
+          "start_line": 294,
+          "end_line": 310
+        }
+      ],
+      "notes": []
+    },
+    {
+      "line": 312,
+      "title": "5.7 GPIO Peripheral Interface",
+      "end_line": 333,
+      "keywords": [
+        "HOST_IRQ",
+        "GPIO_08",
+        "DMD"
+      ],
+      "tables": [
+        {
+          "start_line": 314,
+          "end_line": 332
+        }
+      ],
+      "notes": []
+    },
+    {
+      "line": 334,
+      "title": "[www.ti.com](https://www.ti.com/)",
+      "end_line": 347,
+      "keywords": [],
+      "tables": [
+        {
+          "start_line": 336,
+          "end_line": 342
+        }
+      ],
+      "notes": [
+        {
+          "line": 346,
+          "text": "(3) See Table 5-1 for type definitions."
+        }
+      ]
+    },
+    {
+      "line": 348,
+      "title": "5.8 Clock and PLL Support",
+      "end_line": 355,
+      "keywords": [
+        "oscillator",
+        "PLL_REFCLK_I",
+        "PLL_REFCLK_O"
+      ],
+      "tables": [
+        {
+          "start_line": 350,
+          "end_line": 354
+        }
+      ],
+      "notes": []
+    },
+    {
+      "line": 356,
+      "title": "5.9 Power and Ground",
+      "end_line": 371,
+      "keywords": [
+        "VCC_FLSH",
+        "SPI flash",
+        "IIC0",
+        "HOST_IRQ",
+        "PARKZ",
+        "VCC_INTF",
+        "DMD"
+      ],
+      "tables": [
+        {
+          "start_line": 358,
+          "end_line": 370
+        }
+      ],
+      "notes": []
+    },
+    {
+      "line": 372,
+      "title": "Table 5-1. I/O Type Subscript Definition",
+      "end_line": 390,
+      "keywords": [
+        "I 2 C"
+      ],
+      "tables": [
+        {
+          "start_line": 374,
+          "end_line": 389
+        }
+      ],
+      "notes": []
+    },
+    {
+      "line": 391,
+      "title": "6 Specifications",
+      "end_line": 392,
+      "keywords": [],
+      "tables": [],
+      "notes": []
+    },
+    {
+      "line": 393,
+      "title": "6.1 Absolute Maximum Ratings",
+      "end_line": 412,
+      "keywords": [
+        "VCC_FLSH",
+        "VCC_INTF",
+        "DMD"
+      ],
+      "tables": [
+        {
+          "start_line": 397,
+          "end_line": 411
+        }
+      ],
+      "notes": []
+    },
+    {
+      "line": 413,
+      "title": "6.2 ESD Ratings",
+      "end_line": 419,
+      "keywords": [],
+      "tables": [
+        {
+          "start_line": 415,
+          "end_line": 418
+        }
+      ],
+      "notes": []
+    },
+    {
+      "line": 420,
+      "title": "6.3 Recommended Operating Conditions",
+      "end_line": 444,
+      "keywords": [
+        "VCC_FLSH",
+        "SPI flash",
+        "IIC0",
+        "HOST_IRQ",
+        "PARKZ",
+        "VCC_INTF"
+      ],
+      "tables": [
+        {
+          "start_line": 424,
+          "end_line": 438
+        }
+      ],
+      "notes": [
+        {
+          "line": 443,
+          "text": "(4) VDDLP12 must be tied to the VDD rail."
+        }
+      ]
+    },
+    {
+      "line": 445,
+      "title": "6.4 Thermal Information",
+      "end_line": 454,
+      "keywords": [],
+      "tables": [
+        {
+          "start_line": 447,
+          "end_line": 453
+        }
+      ],
+      "notes": []
+    },
+    {
+      "line": 455,
+      "title": "6.5 Power Electrical Characteristics",
+      "end_line": 476,
+      "keywords": [
+        "VCC_FLSH",
+        "SPI flash",
+        "IIC0",
+        "HOST_IRQ",
+        "VCC_INTF"
+      ],
+      "tables": [
+        {
+          "start_line": 459,
+          "end_line": 472
+        }
+      ],
+      "notes": []
+    },
+    {
+      "line": 477,
+      "title": "6.6 Pin Electrical Characteristics",
+      "end_line": 573,
+      "keywords": [
+        "VCC_FLSH",
+        "I 2 C",
+        "VCC_INTF",
+        "DMD"
+      ],
+      "tables": [
+        {
+          "start_line": 481,
+          "end_line": 516
+        },
+        {
+          "start_line": 520,
+          "end_line": 546
+        },
+        {
+          "start_line": 550,
+          "end_line": 568
+        }
+      ],
+      "notes": []
+    },
+    {
+      "line": 574,
+      "title": "6.7 Internal Pullup and Pulldown Electrical Characteristics",
+      "end_line": 586,
+      "keywords": [],
+      "tables": [
+        {
+          "start_line": 578,
+          "end_line": 585
+        }
+      ],
+      "notes": []
+    },
+    {
+      "line": 587,
+      "title": "6.8 DMD Sub-LVDS Interface Electrical Characteristics",
+      "end_line": 609,
+      "keywords": [
+        "DMD"
+      ],
+      "tables": [
+        {
+          "start_line": 591,
+          "end_line": 601
+        }
+      ],
+      "notes": []
+    },
+    {
+      "line": 610,
+      "title": "6.9 DMD Low-Speed Interface Electrical Characteristics",
+      "end_line": 631,
+      "keywords": [
+        "DMD"
+      ],
+      "tables": [
+        {
+          "start_line": 614,
+          "end_line": 622
+        }
+      ],
+      "notes": []
+    },
+    {
+      "line": 632,
+      "title": "6.10 System Oscillator Timing Requirements",
+      "end_line": 647,
+      "keywords": [
+        "oscillator",
+        "MOSC",
+        "spread spectrum"
+      ],
+      "tables": [
+        {
+          "start_line": 634,
+          "end_line": 641
+        }
+      ],
+      "notes": []
+    },
+    {
+      "line": 648,
+      "title": "6.11 Power Supply and Reset Timing Requirements",
+      "end_line": 660,
+      "keywords": [],
+      "tables": [
+        {
+          "start_line": 650,
+          "end_line": 655
+        }
+      ],
+      "notes": []
+    },
+    {
+      "line": 661,
+      "title": "6.12 Parallel Interface Frame Timing Requirements",
+      "end_line": 678,
+      "keywords": [
+        "DMD"
+      ],
+      "tables": [
+        {
+          "start_line": 665,
+          "end_line": 673
+        }
+      ],
+      "notes": []
+    },
+    {
+      "line": 679,
+      "title": "6.13 Parallel Interface General Timing Requirements",
+      "end_line": 699,
+      "keywords": [],
+      "tables": [
+        {
+          "start_line": 681,
+          "end_line": 692
+        }
+      ],
+      "notes": []
+    },
+    {
+      "line": 700,
+      "title": "6.14 Flash Interface Timing Requirements",
+      "end_line": 722,
+      "keywords": [
+        "oscillator",
+        "SPI flash"
+      ],
+      "tables": [
+        {
+          "start_line": 704,
+          "end_line": 714
+        }
+      ],
+      "notes": []
+    },
+    {
+      "line": 723,
+      "title": "6.15 Other Timing Requirements",
+      "end_line": 733,
+      "keywords": [
+        "I 2 C",
+        "GPIO_08",
+        "PARKZ"
+      ],
+      "tables": [
+        {
+          "start_line": 725,
+          "end_line": 732
+        }
+      ],
+      "notes": []
+    },
+    {
+      "line": 734,
+      "title": "6.16 DMD Sub-LVDS Interface Switching Characteristics",
+      "end_line": 745,
+      "keywords": [
+        "DMD"
+      ],
+      "tables": [
+        {
+          "start_line": 738,
+          "end_line": 744
+        }
+      ],
+      "notes": []
+    },
+    {
+      "line": 746,
+      "title": "6.17 DMD Parking Switching Characteristics",
+      "end_line": 760,
+      "keywords": [
+        "oscillator",
+        "PARKZ",
+        "DMD",
+        "PMIC"
+      ],
+      "tables": [
+        {
+          "start_line": 748,
+          "end_line": 751
+        }
+      ],
+      "notes": [
+        {
+          "line": 755,
+          "text": "(1) Normal park time is defined as how long it takes the DLPC34xx controller to complete the parking of the DMD after it receives the normal park request (GPIO\\_08 goes low)."
+        },
+        {
+          "line": 757,
+          "text": "(2) The oscillator and power supplies must remain active for at least the duration of the park time. The power supplies must additionally be held on for a time after parking is completed to satisfy DMD requirements. See Section 9.2 and the appropriate DMD or PMIC datasheet for more information."
+        },
+        {
+          "line": 759,
+          "text": "(3) Fast park time is defined as how long it takes the DLPC34xx controller to complete the parking of the DMD after it receives the fast park request (PARKZ goes low)."
+        }
+      ]
+    },
+    {
+      "line": 761,
+      "title": "6.18 Chipset Component Usage Specification",
+      "end_line": 764,
+      "keywords": [
+        "DMD",
+        "PMIC"
+      ],
+      "tables": [],
+      "notes": []
+    },
+    {
+      "line": 765,
+      "title": "Table 6-1. DLPC3436 Supported DMDs and PMICs",
+      "end_line": 775,
+      "keywords": [
+        "DMD",
+        "PMIC"
+      ],
+      "tables": [
+        {
+          "start_line": 767,
+          "end_line": 772
+        }
+      ],
+      "notes": []
+    },
+    {
+      "line": 776,
+      "title": "7 Detailed Description",
+      "end_line": 777,
+      "keywords": [],
+      "tables": [],
+      "notes": []
+    },
+    {
+      "line": 778,
+      "title": "7.1 Overview",
+      "end_line": 781,
+      "keywords": [
+        "DMD",
+        "PMIC"
+      ],
+      "tables": [],
+      "notes": []
+    },
+    {
+      "line": 782,
+      "title": "7.2 Functional Block Diagram",
+      "end_line": 783,
+      "keywords": [],
+      "tables": [],
+      "notes": []
+    },
+    {
+      "line": 784,
+      "title": "7.3 Feature Description",
+      "end_line": 785,
+      "keywords": [],
+      "tables": [],
+      "notes": []
+    },
+    {
+      "line": 786,
+      "title": "7.3.1 Input Source Requirements",
+      "end_line": 787,
+      "keywords": [],
+      "tables": [],
+      "notes": []
+    },
+    {
+      "line": 788,
+      "title": "7.3.1.1 Input Frame Rates and 3-D Display Operation",
+      "end_line": 807,
+      "keywords": [],
+      "tables": [
+        {
+          "start_line": 792,
+          "end_line": 798
+        }
+      ],
+      "notes": [
+        {
+          "line": 802,
+          "text": "(6) 3D video is formatted as frame sequential."
+        }
+      ]
+    },
+    {
+      "line": 808,
+      "title": "7.3.1.1.1 Parallel Interface Data Transfer Format",
+      "end_line": 815,
+      "keywords": [],
+      "tables": [],
+      "notes": []
+    },
+    {
+      "line": 816,
+      "title": "7.3.1.2 3D Display",
+      "end_line": 826,
+      "keywords": [
+        "DMD"
+      ],
+      "tables": [],
+      "notes": []
+    },
+    {
+      "line": 827,
+      "title": "7.3.2 Device Startup",
+      "end_line": 842,
+      "keywords": [
+        "I 2 C"
+      ],
+      "tables": [],
+      "notes": []
+    },
+    {
+      "line": 843,
+      "title": "7.3.3 SPI Flash",
+      "end_line": 844,
+      "keywords": [
+        "SPI flash"
+      ],
+      "tables": [],
+      "notes": []
+    },
+    {
+      "line": 845,
+      "title": "7.3.3.1 SPI Flash Interface",
+      "end_line": 856,
+      "keywords": [
+        "SPI flash"
+      ],
+      "tables": [],
+      "notes": []
+    },
+    {
+      "line": 857,
+      "title": "Table 7-2. Additional DLPC34xx SPI Flash Requirements",
+      "end_line": 892,
+      "keywords": [
+        "SPI flash"
+      ],
+      "tables": [
+        {
+          "start_line": 859,
+          "end_line": 873
+        }
+      ],
+      "notes": [
+        {
+          "line": 889,
+          "text": "Note that the flash device automatically clears the write enable status after each program and erase instruction."
+        }
+      ]
+    },
+    {
+      "line": 893,
+      "title": "Table 7-3. SPI Flash Instruction OpCode and Access Profile Compatibility Requirements",
+      "end_line": 906,
+      "keywords": [
+        "SPI flash"
+      ],
+      "tables": [
+        {
+          "start_line": 895,
+          "end_line": 903
+        }
+      ],
+      "notes": []
+    },
+    {
+      "line": 907,
+      "title": "Table 7-4. SPI Flash Key Timing Parameter Compatibility Requirements",
+      "end_line": 919,
+      "keywords": [
+        "SPI flash"
+      ],
+      "tables": [
+        {
+          "start_line": 909,
+          "end_line": 916
+        }
+      ],
+      "notes": [
+        {
+          "line": 918,
+          "text": "In order for the DLPC34xx controller to support 1.8-V, 2.5-V, or 3.3-V serial flash devices, the VCC\\_FLSH pin must be supplied with the corresponding voltage. Table 7-5 contains a list of validated 1.8-V, 2.5-V, or 3.3-V compatible SPI serial flash devices supported by the DLPC34xx controller."
+        }
+      ]
+    },
+    {
+      "line": 920,
+      "title": "Table 7-5. DLPC3436 Compatible SPI Flash Device Options (3.3-V Compatible Devices)  (1)",
+      "end_line": 926,
+      "keywords": [
+        "SPI flash"
+      ],
+      "tables": [
+        {
+          "start_line": 922,
+          "end_line": 925
+        }
+      ],
+      "notes": []
+    },
+    {
+      "line": 927,
+      "title": "7.3.3.2 SPI Flash Programming",
+      "end_line": 930,
+      "keywords": [
+        "SPI flash",
+        "I 2 C"
+      ],
+      "tables": [],
+      "notes": []
+    },
+    {
+      "line": 931,
+      "title": "7.3.4 I 2 C Interface",
+      "end_line": 934,
+      "keywords": [
+        "I 2 C"
+      ],
+      "tables": [],
+      "notes": []
+    },
+    {
+      "line": 935,
+      "title": "7.3.5 Content Adaptive Illumination Control (CAIC)",
+      "end_line": 967,
+      "keywords": [],
+      "tables": [],
+      "notes": []
+    },
+    {
+      "line": 968,
+      "title": "7.3.6 Local Area Brightness Boost (LABB)",
+      "end_line": 977,
+      "keywords": [],
+      "tables": [],
+      "notes": []
+    },
+    {
+      "line": 978,
+      "title": "7.3.7 3D Glasses Operation",
+      "end_line": 999,
+      "keywords": [
+        "DMD"
+      ],
+      "tables": [],
+      "notes": []
+    },
+    {
+      "line": 1000,
+      "title": "Table 7-6. 3D DLP Link Timing",
+      "end_line": 1012,
+      "keywords": [],
+      "tables": [
+        {
+          "start_line": 1002,
+          "end_line": 1009
+        }
+      ],
+      "notes": []
+    },
+    {
+      "line": 1013,
+      "title": "7.3.8 Test Point Support",
+      "end_line": 1031,
+      "keywords": [],
+      "tables": [
+        {
+          "start_line": 1021,
+          "end_line": 1030
+        }
+      ],
+      "notes": []
+    },
+    {
+      "line": 1032,
+      "title": "7.3.9 DMD Interface",
+      "end_line": 1035,
+      "keywords": [
+        "DMD"
+      ],
+      "tables": [],
+      "notes": []
+    },
+    {
+      "line": 1036,
+      "title": "7.3.9.1 Sub-LVDS (HS) Interface",
+      "end_line": 1063,
+      "keywords": [
+        "DMD"
+      ],
+      "tables": [
+        {
+          "start_line": 1042,
+          "end_line": 1052
+        }
+      ],
+      "notes": []
+    },
+    {
+      "line": 1064,
+      "title": "7.4 Device Functional Modes",
+      "end_line": 1070,
+      "keywords": [
+        "DMD"
+      ],
+      "tables": [],
+      "notes": []
+    },
+    {
+      "line": 1071,
+      "title": "7.5 Programming",
+      "end_line": 1076,
+      "keywords": [
+        "I 2 C",
+        "PMIC"
+      ],
+      "tables": [],
+      "notes": []
+    },
+    {
+      "line": 1077,
+      "title": "8 Application and Implementation",
+      "end_line": 1078,
+      "keywords": [],
+      "tables": [],
+      "notes": []
+    },
+    {
+      "line": 1079,
+      "title": "Note",
+      "end_line": 1082,
+      "keywords": [],
+      "tables": [],
+      "notes": []
+    },
+    {
+      "line": 1083,
+      "title": "8.1 Application Information",
+      "end_line": 1090,
+      "keywords": [
+        "DMD"
+      ],
+      "tables": [],
+      "notes": []
+    },
+    {
+      "line": 1091,
+      "title": "8.2 Typical Application",
+      "end_line": 1098,
+      "keywords": [
+        "PMIC"
+      ],
+      "tables": [],
+      "notes": []
+    },
+    {
+      "line": 1099,
+      "title": "8.2.1 Design Requirements",
+      "end_line": 1108,
+      "keywords": [
+        "DMD",
+        "PMIC"
+      ],
+      "tables": [],
+      "notes": []
+    },
+    {
+      "line": 1109,
+      "title": "8.2.2 Detailed Design Procedure",
+      "end_line": 1114,
+      "keywords": [
+        "DMD",
+        "PMIC"
+      ],
+      "tables": [],
+      "notes": []
+    },
+    {
+      "line": 1115,
+      "title": "8.2.3 Application Curve",
+      "end_line": 1122,
+      "keywords": [],
+      "tables": [],
+      "notes": []
+    },
+    {
+      "line": 1123,
+      "title": "9 Power Supply Recommendations 9.1 PLL Design Considerations",
+      "end_line": 1126,
+      "keywords": [],
+      "tables": [],
+      "notes": []
+    },
+    {
+      "line": 1127,
+      "title": "9.2 System Power-Up and Power-Down Sequence",
+      "end_line": 1139,
+      "keywords": [],
+      "tables": [],
+      "notes": [
+        {
+          "line": 1136,
+          "text": "Note  that  when  V DD  core  power  is  applied,  but  I/O  power  is  not  applied,  additional  leakage  current  may  be drawn. This added leakage does not affect normal controller operation or reliability."
+        }
+      ]
+    },
+    {
+      "line": 1140,
+      "title": "Note",
+      "end_line": 1166,
+      "keywords": [
+        "I 2 C",
+        "PARKZ",
+        "DMD",
+        "PMIC"
+      ],
+      "tables": [],
+      "notes": []
+    },
+    {
+      "line": 1167,
+      "title": "9.3 Power-Up Initialization Sequence",
+      "end_line": 1190,
+      "keywords": [
+        "PARKZ",
+        "DMD",
+        "PMIC"
+      ],
+      "tables": [],
+      "notes": []
+    },
+    {
+      "line": 1191,
+      "title": "Note",
+      "end_line": 1194,
+      "keywords": [
+        "I 2 C"
+      ],
+      "tables": [],
+      "notes": []
+    },
+    {
+      "line": 1195,
+      "title": "9.4 DMD Fast Park Control (PARKZ)",
+      "end_line": 1200,
+      "keywords": [
+        "PARKZ",
+        "DMD"
+      ],
+      "tables": [],
+      "notes": []
+    },
+    {
+      "line": 1201,
+      "title": "9.5 Hot Plug I/O Usage",
+      "end_line": 1208,
+      "keywords": [
+        "IIC0",
+        "I 2 C"
+      ],
+      "tables": [],
+      "notes": []
+    },
+    {
+      "line": 1209,
+      "title": "9.6 Maximum Signal Transition Time",
+      "end_line": 1214,
+      "keywords": [
+        "PARKZ"
+      ],
+      "tables": [],
+      "notes": []
+    },
+    {
+      "line": 1215,
+      "title": "10 Layout",
+      "end_line": 1216,
+      "keywords": [],
+      "tables": [],
+      "notes": []
+    },
+    {
+      "line": 1217,
+      "title": "10.1 Layout Guidelines",
+      "end_line": 1220,
+      "keywords": [],
+      "tables": [],
+      "notes": []
+    },
+    {
+      "line": 1221,
+      "title": "10.1.1 PLL Power Layout",
+      "end_line": 1224,
+      "keywords": [],
+      "tables": [],
+      "notes": []
+    },
+    {
+      "line": 1225,
+      "title": "Select ferrite beads with these characteristics:",
+      "end_line": 1236,
+      "keywords": [],
+      "tables": [],
+      "notes": []
+    },
+    {
+      "line": 1237,
+      "title": "10.1.2 Reference Clock Layout",
+      "end_line": 1248,
+      "keywords": [
+        "oscillator"
+      ],
+      "tables": [],
+      "notes": []
+    },
+    {
+      "line": 1249,
+      "title": "where:",
+      "end_line": 1255,
+      "keywords": [],
+      "tables": [],
+      "notes": []
+    },
+    {
+      "line": 1256,
+      "title": "10.1.2.1 Recommended Crystal Oscillator Configuration",
+      "end_line": 1294,
+      "keywords": [
+        "oscillator",
+        "PLL_REFCLK_I",
+        "PLL_REFCLK_O"
+      ],
+      "tables": [
+        {
+          "start_line": 1260,
+          "end_line": 1263
+        },
+        {
+          "start_line": 1267,
+          "end_line": 1280
+        },
+        {
+          "start_line": 1289,
+          "end_line": 1293
+        }
+      ],
+      "notes": []
+    },
+    {
+      "line": 1295,
+      "title": "10.1.3 Unused Pins",
+      "end_line": 1302,
+      "keywords": [],
+      "tables": [],
+      "notes": []
+    },
+    {
+      "line": 1303,
+      "title": "10.1.4 DMD Control and Sub-LVDS Signals",
+      "end_line": 1323,
+      "keywords": [
+        "DMD"
+      ],
+      "tables": [
+        {
+          "start_line": 1307,
+          "end_line": 1322
+        }
+      ],
+      "notes": []
+    },
+    {
+      "line": 1324,
+      "title": "Table 10-5. High Speed PCB Signal Routing Matching Requirements",
+      "end_line": 1341,
+      "keywords": [
+        "DMD"
+      ],
+      "tables": [
+        {
+          "start_line": 1326,
+          "end_line": 1340
+        }
+      ],
+      "notes": []
+    },
+    {
+      "line": 1342,
+      "title": "Table 10-6. Signal Requirements",
+      "end_line": 1370,
+      "keywords": [
+        "DMD"
+      ],
+      "tables": [
+        {
+          "start_line": 1344,
+          "end_line": 1369
+        }
+      ],
+      "notes": []
+    },
+    {
+      "line": 1371,
+      "title": "10.1.5 Layer Changes",
+      "end_line": 1375,
+      "keywords": [],
+      "tables": [],
+      "notes": []
+    },
+    {
+      "line": 1376,
+      "title": "10.1.6 Stubs",
+      "end_line": 1379,
+      "keywords": [],
+      "tables": [],
+      "notes": []
+    },
+    {
+      "line": 1380,
+      "title": "10.1.7 Terminations",
+      "end_line": 1386,
+      "keywords": [
+        "DMD"
+      ],
+      "tables": [],
+      "notes": []
+    },
+    {
+      "line": 1387,
+      "title": "10.1.8 Routing Vias",
+      "end_line": 1393,
+      "keywords": [
+        "DMD"
+      ],
+      "tables": [],
+      "notes": []
+    },
+    {
+      "line": 1394,
+      "title": "10.1.9 Thermal Considerations",
+      "end_line": 1413,
+      "keywords": [],
+      "tables": [],
+      "notes": []
+    },
+    {
+      "line": 1414,
+      "title": "10.2 Layout Example",
+      "end_line": 1417,
+      "keywords": [],
+      "tables": [],
+      "notes": []
+    },
+    {
+      "line": 1418,
+      "title": "11 Device and Documentation Support",
+      "end_line": 1419,
+      "keywords": [],
+      "tables": [],
+      "notes": []
+    },
+    {
+      "line": 1420,
+      "title": "11.1 Device Support",
+      "end_line": 1421,
+      "keywords": [],
+      "tables": [],
+      "notes": []
+    },
+    {
+      "line": 1422,
+      "title": "11.1.1 Third-Party Products Disclaimer",
+      "end_line": 1425,
+      "keywords": [],
+      "tables": [],
+      "notes": []
+    },
+    {
+      "line": 1426,
+      "title": "11.1.2 Device Nomenclature",
+      "end_line": 1427,
+      "keywords": [],
+      "tables": [],
+      "notes": []
+    },
+    {
+      "line": 1428,
+      "title": "11.1.2.1 Device Markings",
+      "end_line": 1429,
+      "keywords": [],
+      "tables": [],
+      "notes": []
+    },
+    {
+      "line": 1430,
+      "title": "Marking Definitions:",
+      "end_line": 1471,
+      "keywords": [],
+      "tables": [],
+      "notes": []
+    },
+    {
+      "line": 1472,
+      "title": "Note",
+      "end_line": 1476,
+      "keywords": [],
+      "tables": [],
+      "notes": []
+    },
+    {
+      "line": 1477,
+      "title": "11.1.2.2 Video Timing Parameter Definitions",
+      "end_line": 1522,
+      "keywords": [],
+      "tables": [],
+      "notes": []
+    },
+    {
+      "line": 1523,
+      "title": "11.2 Documentation Support",
+      "end_line": 1524,
+      "keywords": [],
+      "tables": [],
+      "notes": []
+    },
+    {
+      "line": 1525,
+      "title": "11.2.1 Related Documentation",
+      "end_line": 1537,
+      "keywords": [],
+      "tables": [
+        {
+          "start_line": 1531,
+          "end_line": 1536
+        }
+      ],
+      "notes": []
+    },
+    {
+      "line": 1538,
+      "title": "11.3 Related Links",
+      "end_line": 1547,
+      "keywords": [],
+      "tables": [
+        {
+          "start_line": 1544,
+          "end_line": 1546
+        }
+      ],
+      "notes": []
+    },
+    {
+      "line": 1548,
+      "title": "11.4 Receiving Notification of Documentation Updates",
+      "end_line": 1551,
+      "keywords": [],
+      "tables": [],
+      "notes": []
+    },
+    {
+      "line": 1552,
+      "title": "11.5 Support Resources",
+      "end_line": 1557,
+      "keywords": [],
+      "tables": [],
+      "notes": []
+    },
+    {
+      "line": 1558,
+      "title": "11.6 Trademarks",
+      "end_line": 1567,
+      "keywords": [],
+      "tables": [],
+      "notes": []
+    },
+    {
+      "line": 1568,
+      "title": "11.7 Electrostatic Discharge Caution",
+      "end_line": 1573,
+      "keywords": [],
+      "tables": [],
+      "notes": []
+    },
+    {
+      "line": 1574,
+      "title": "11.8 Glossary",
+      "end_line": 1575,
+      "keywords": [],
+      "tables": [],
+      "notes": []
+    },
+    {
+      "line": 1576,
+      "title": "[TI Glossary](https://www.ti.com/lit/pdf/SLYZ022)",
+      "end_line": 1581,
+      "keywords": [],
+      "tables": [],
+      "notes": []
+    },
+    {
+      "line": 1582,
+      "title": "12 Mechanical, Packaging, and Orderable Information",
+      "end_line": 1585,
+      "keywords": [],
+      "tables": [],
+      "notes": []
+    },
+    {
+      "line": 1586,
+      "title": "12.1 Package Option Addendum",
+      "end_line": 1587,
+      "keywords": [],
+      "tables": [],
+      "notes": []
+    },
+    {
+      "line": 1588,
+      "title": "12.1.1 Packaging Information",
+      "end_line": 1625,
+      "keywords": [],
+      "tables": [
+        {
+          "start_line": 1590,
+          "end_line": 1592
+        }
+      ],
+      "notes": []
+    },
+    {
+      "line": 1626,
+      "title": "IMPORTANT NOTICE AND DISCLAIMER",
+      "end_line": 1638,
+      "keywords": [],
+      "tables": [],
+      "notes": []
+    }
+  ],
+  "anchors": [
+    {
+      "id": "oscillator_timing_table",
+      "kind": "table",
+      "title": "System Oscillator Timing Requirements",
+      "terms": [
+        "System Oscillator Timing Requirements"
+      ],
+      "lines": [
+        97,
+        632
+      ]
+    },
+    {
+      "id": "oscillator_mosc_notes",
+      "kind": "note",
+      "title": "MOSC accuracy and spread spectrum notes",
+      "terms": [
+        "spread spectrum clock spreading"
+      ],
+      "lines": [
+        643
+      ]
+    },
+    {
+      "id": "reference_clock_layout",
+      "kind": "section",
+      "title": "Reference Clock Layout",
+      "terms": [
+        "Reference Clock Layout"
+      ],
+      "lines": [
+        1237
+      ]
+    },
+    {
+      "id": "pll_refclk_pins",
+      "kind": "pin_rows",
+      "title": "PLL_REFCLK_I / PLL_REFCLK_O",
+      "terms": [
+        "PLL_REFCLK_I"
+      ],
+      "lines": [
+        353,
+        1262
+      ]
+    },
+    {
+      "id": "spi_flash_options",
+      "kind": "table",
+      "title": "Compatible SPI Flash Device Options",
+      "terms": [
+        "Compatible SPI Flash Device Options"
+      ],
+      "lines": [
+        920
+      ]
+    },
+    {
+      "id": "spi_flash_voltage_condition",
+      "kind": "paragraph",
+      "title": "VCC_FLSH corresponding voltage condition",
+      "terms": [
+        "VCC_FLSH",
+        "corresponding voltage"
+      ],
+      "lines": [
+        918
+      ]
+    },
+    {
+      "id": "vcc_intf_recommended",
+      "kind": "table",
+      "title": "VCC_INTF recommended operating conditions",
+      "terms": [
+        "VCC_INTF"
+      ],
+      "lines": [
+        111,
+        130,
+        145,
+        214,
+        215,
+        300,
+        302,
+        365,
+        404,
+        429,
+        469,
+        470
+      ]
+    },
+    {
+      "id": "iic0_control_port",
+      "kind": "pin_rows",
+      "title": "IIC0 control port and pullups",
+      "terms": [
+        "IIC0_SCL"
+      ],
+      "lines": [
+        215,
+        300
+      ]
+    },
+    {
+      "id": "host_irq_initialization",
+      "kind": "state",
+      "title": "HOST_IRQ initialization state",
+      "terms": [
+        "ready to receive commands"
+      ],
+      "lines": [
+        834
+      ]
+    },
+    {
+      "id": "gpio08_parking",
+      "kind": "pin_row",
+      "title": "GPIO_08 normal mirror parking",
+      "terms": [
+        "GPIO_08"
+      ],
+      "lines": [
+        164,
+        209,
+        328,
+        731
+      ]
+    }
+  ],
+  "query_stage_hints": {
+    "oscillator_timing": [
+      "oscillator_timing_table",
+      "oscillator_mosc_notes",
+      "reference_clock_layout",
+      "pll_refclk_pins"
+    ],
+    "spi_flash_support": [
+      "spi_flash_voltage_condition",
+      "spi_flash_options"
+    ],
+    "i2c_interface": [
+      "iic0_control_port",
+      "vcc_intf_recommended",
+      "host_irq_initialization"
+    ],
+    "parking": [
+      "gpio08_parking"
+    ]
+  }
+}
