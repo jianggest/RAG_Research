@@ -22,6 +22,7 @@ import json
 from pathlib import Path
 
 from llm import call_llm
+from config import AUGMENT_MAX_CHUNKS
 
 _CACHE_FILE = Path(__file__).parent / "knowledge_base" / ".question_cache.json"
 
@@ -70,9 +71,12 @@ def _should_augment(chunk: dict) -> bool:
     判断 chunk 是否值得生成增强问题。
 
     规则：
+    - datasheet chunk：跳过自然语言增强，避免 LLM 生成问题污染精确技术索引。
     - 表格 chunk：无论长短都增强（年假表、报销标准表是用户最常查的内容）
     - 文本 chunk：内容足够长才有增强价值（纯标题、过渡句跳过）
     """
+    if chunk.get("is_datasheet"):
+        return False
     if chunk.get("is_table"):
         return True
     return len(chunk["text"]) >= 80
@@ -116,6 +120,9 @@ def generate_augmented_entries(chunks: list[dict]) -> list[dict]:
         text = chunk["text"]
         if not _should_augment(chunk):
             continue
+        if AUGMENT_MAX_CHUNKS is not None and len(cache) >= AUGMENT_MAX_CHUNKS:
+            print(f"[Augmenter] 达到增强上限 {AUGMENT_MAX_CHUNKS}，跳过剩余 chunk", flush=True)
+            break
 
         key = _chunk_hash(text)
 
@@ -133,6 +140,8 @@ def generate_augmented_entries(chunks: list[dict]) -> list[dict]:
                 "source":        chunk["source"],
                 "chunk_index":   chunk["chunk_index"],
                 "is_table":      chunk["is_table"],
+                "is_datasheet":  bool(chunk.get("is_datasheet", False)),
+                "index_kind":    chunk.get("index_kind", "block"),
                 "original_text": text,
                 "chunk_hash":    key,
             })
