@@ -12,7 +12,7 @@
   - 检索命中增强条目时，返回 metadata 中的原始文本，而非问题文本本身
 
 缓存机制：
-  - 生成结果持久化到 knowledge_base/.question_cache.json
+  - 生成结果持久化到当前 profile 的 knowledge_base/<profile>/.question_cache.json
   - 缓存键：chunk text 的 MD5（文档内容变更时自动失效）
   - 重启时直接复用，不重复调用 LLM
 """
@@ -22,9 +22,10 @@ import json
 from pathlib import Path
 
 from llm import call_llm
-from config import AUGMENT_MAX_CHUNKS
+from config import AUGMENT_MAX_CHUNKS, get_knowledge_base_dir
 
-_CACHE_FILE = Path(__file__).parent / "knowledge_base" / ".question_cache.json"
+def get_question_cache_file() -> Path:
+    return get_knowledge_base_dir() / ".question_cache.json"
 
 _AUGMENT_PROMPT = """\
 给定以下文档片段，请从用户提问的角度，生成8-10个不同的自然语言问题，这些问题的答案都能在这段内容中找到。
@@ -43,9 +44,10 @@ _AUGMENT_PROMPT = """\
 
 def load_cache() -> dict:
     """加载本地问题缓存，文件不存在时返回空字典。"""
-    if _CACHE_FILE.exists():
+    cache_file = get_question_cache_file()
+    if cache_file.exists():
         try:
-            return json.loads(_CACHE_FILE.read_text(encoding="utf-8"))
+            return json.loads(cache_file.read_text(encoding="utf-8"))
         except Exception:
             return {}
     return {}
@@ -53,7 +55,9 @@ def load_cache() -> dict:
 
 def save_cache(cache: dict) -> None:
     """持久化问题缓存到本地文件。"""
-    _CACHE_FILE.write_text(
+    cache_file = get_question_cache_file()
+    cache_file.parent.mkdir(parents=True, exist_ok=True)
+    cache_file.write_text(
         json.dumps(cache, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
@@ -148,6 +152,6 @@ def generate_augmented_entries(chunks: list[dict]) -> list[dict]:
 
     if cache_updated:
         save_cache(cache)
-        print(f"[Augmenter] 缓存已保存：{_CACHE_FILE}（共 {len(cache)} 个 chunk）")
+        print(f"[Augmenter] 缓存已保存：{get_question_cache_file()}（共 {len(cache)} 个 chunk）")
 
     return augmented

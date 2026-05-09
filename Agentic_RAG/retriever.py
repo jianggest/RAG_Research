@@ -22,6 +22,7 @@ from config import (
     INDEX_BATCH_SIZE,
     PERSIST_CHROMA_INDEX,
     TOP_K,
+    get_chroma_collection_names,
 )
 
 def _chunk_content_id(prefix: str, chunk: dict) -> str:
@@ -392,9 +393,16 @@ class DatasheetIndexConfig:
     """Optional Phase-2 datasheet row-index configuration."""
 
     row_chunks: list[dict] = field(default_factory=list)
-    block_collection_name: str = "agentic_rag_block"
-    row_collection_name: str = "agentic_rag_row"
+    block_collection_name: str | None = None
+    row_collection_name: str | None = None
     structure_path: str | Path | None = None
+
+    def __post_init__(self) -> None:
+        names = get_chroma_collection_names()
+        if self.block_collection_name is None:
+            self.block_collection_name = names["datasheet_block"]
+        if self.row_collection_name is None:
+            self.row_collection_name = names["datasheet_row"]
 
 
 class Retriever:
@@ -470,7 +478,7 @@ class Retriever:
                 client = chromadb.Client()
         self._client = client
 
-        collection_names = ["agentic_rag"]
+        collection_names = [get_chroma_collection_names()["block"]]
         if self._row_chunks:
             collection_names.extend([
                 self._datasheet_index.block_collection_name,
@@ -484,7 +492,7 @@ class Retriever:
                     pass
 
         embedding_fn = _build_embedding_fn()
-        kwargs = {"name": self._datasheet_index.block_collection_name if self._row_chunks else "agentic_rag"}
+        kwargs = {"name": self._datasheet_index.block_collection_name if self._row_chunks else get_chroma_collection_names()["block"]}
         if embedding_fn and not PERSIST_CHROMA_INDEX:
             kwargs["embedding_function"] = embedding_fn
         self._block_collection = client.get_or_create_collection(**kwargs) if PERSIST_CHROMA_INDEX else client.create_collection(**kwargs)

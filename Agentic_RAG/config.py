@@ -1,10 +1,43 @@
 """
 全局配置项，所有模块从此处读取，修改行为只需改这里。
 """
+import os
 from pathlib import Path
 
-# 目录
-KNOWLEDGE_BASE_DIR = Path(__file__).parent / "knowledge_base"
+# 目录 / 知识库 profile 隔离
+# RAG_PROFILE=enterprise | datasheet | all
+# - enterprise: 只加载 knowledge_base/enterprise
+# - datasheet: 只加载 knowledge_base/datasheet
+# - all: 加载 knowledge_base 根目录（仅调试/兼容用，不建议生产默认）
+RAG_PROFILE = "datasheet" #os.getenv("RAG_PROFILE", "enterprise").strip().lower()
+SUPPORTED_RAG_PROFILES = {"enterprise", "datasheet", "all"}
+KNOWLEDGE_BASE_ROOT = Path(__file__).parent / "knowledge_base"
+
+def get_rag_profile() -> str:
+    profile = os.getenv("RAG_PROFILE", RAG_PROFILE).strip().lower()
+    if profile not in SUPPORTED_RAG_PROFILES:
+        raise ValueError(f"Unsupported RAG_PROFILE={profile!r}; expected one of {sorted(SUPPORTED_RAG_PROFILES)}")
+    return profile
+
+def get_knowledge_base_dir(profile: str | None = None) -> Path:
+    selected = (profile or get_rag_profile()).strip().lower()
+    if selected == "all":
+        return KNOWLEDGE_BASE_ROOT
+    return KNOWLEDGE_BASE_ROOT / selected
+
+def get_chroma_collection_names(profile: str | None = None) -> dict[str, str]:
+    selected = (profile or get_rag_profile()).strip().lower()
+    suffix = "" if selected == "all" else f"_{selected}"
+    return {
+        "block": f"agentic_rag{suffix}",
+        "datasheet_block": f"agentic_rag{suffix}_block",
+        "datasheet_row": f"agentic_rag{suffix}_row",
+    }
+
+KNOWLEDGE_BASE_DIR = get_knowledge_base_dir()
+
+def get_chroma_persist_dir(profile: str | None = None) -> Path:
+    return get_knowledge_base_dir(profile) / "chroma_db"
 
 # 分块
 CHUNK_SIZE = 600
@@ -16,7 +49,7 @@ TOP_K = 5
 # True  → 使用本地持久化目录，按内容 hash 跳过已存在 chunk，避免 Streamlit 每次启动全量 embedding
 # False → 使用内存索引，每次启动重建，适合快速/隔离测试
 PERSIST_CHROMA_INDEX = True
-CHROMA_PERSIST_DIR = Path(__file__).parent / "chroma_db"
+CHROMA_PERSIST_DIR = get_chroma_persist_dir()
 INDEX_BATCH_SIZE = 64
 
 # Embedding 模型（供 Retriever 使用）

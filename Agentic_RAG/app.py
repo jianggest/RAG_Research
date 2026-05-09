@@ -11,7 +11,7 @@ import re
 from pathlib import Path
 
 from agentic_rag import run
-from config import KNOWLEDGE_BASE_DIR
+from config import get_knowledge_base_dir, get_rag_profile
 from document_loader import load_documents
 from evaluator import get_stats, record_satisfied, record_unsatisfied
 from retriever import Retriever
@@ -27,7 +27,9 @@ st.title("🤖 Agentic RAG")
 
 @st.cache_resource(show_spinner="正在加载知识库并建立索引...")
 def init_retriever() -> tuple[Retriever, list]:
-    chunks = load_documents(KNOWLEDGE_BASE_DIR)
+    kb_dir = get_knowledge_base_dir()
+    print(f"[App] RAG_PROFILE={get_rag_profile()} KB={kb_dir}", flush=True)
+    chunks = load_documents(kb_dir)
     retriever = Retriever(chunks)
     retriever.build_index()
     return retriever, chunks
@@ -139,13 +141,13 @@ def _resolve_page_img_path(raw_path: str) -> Path | None:
     if raw.is_absolute():
         candidates.append(raw)
     else:
-        candidates.append(KNOWLEDGE_BASE_DIR / raw)
+        candidates.append(get_knowledge_base_dir() / raw)
         candidates.append(Path(__file__).parent / raw)
 
     parts = raw_path.replace("\\", "/").split("/")
     if ".page_cache" in parts:
         cache_idx = parts.index(".page_cache")
-        candidates.append(KNOWLEDGE_BASE_DIR / Path(*parts[cache_idx:]))
+        candidates.append(get_knowledge_base_dir() / Path(*parts[cache_idx:]))
 
     for candidate in candidates:
         if candidate.exists():

@@ -44,8 +44,8 @@ def test_retriever_builds_physical_block_and_row_collections():
 
     assert retriever._block_collection is not None
     assert retriever._row_collection is not None
-    assert retriever._block_collection.name == "agentic_rag_block"
-    assert retriever._row_collection.name == "agentic_rag_row"
+    assert retriever._block_collection.name.endswith("_block")
+    assert retriever._row_collection.name.endswith("_row")
     assert retriever._collection is retriever._block_collection
     assert retriever._row_chunks is row_chunks
 
