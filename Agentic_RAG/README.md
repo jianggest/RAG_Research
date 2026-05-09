@@ -13,6 +13,8 @@
 
 两类场景共用同一套 Planner / Executor / Generator 编排，但在 chunk schema、归一化、索引、generator prompt、retrieval planner 上做了**子系统级**的分化（详见后文「Datasheet RAG 子系统」一节）。
 
+> v3.1：知识库已拆成 `knowledge_base/enterprise` 与 `knowledge_base/datasheet` 两个 profile。运行时通过 `RAG_PROFILE=enterprise|datasheet|all` 选择加载范围；持久化 Chroma、collection name、增强问题缓存、页面图片缓存均随 profile 隔离，避免企业制度与规格书互相污染。
+
 ---
 
 ## 快速启动
@@ -26,9 +28,10 @@ streamlit run app.py
 #后台启动
 nohup streamlit run app.py --server.address 0.0.0.0 --server.port 8501 > demo.log 2>&1 &
 
-# v3.0：大知识库建议先离线构建/更新持久化索引，再启动前端
-.venv/bin/python tasks/run_persistent_index.py >> demo.log 2>&1
-streamlit run app.py --server.port 8501
+# v3.1：按 profile 离线构建/更新持久化索引，再启动前端
+# 可选：enterprise / datasheet / all；默认见 config.py 的 RAG_PROFILE
+RAG_PROFILE=datasheet .venv/bin/python tasks/run_persistent_index.py >> demo.log 2>&1
+RAG_PROFILE=datasheet streamlit run app.py --server.port 8501
 
 # 运行单元测试
 pytest tests/ -v --ignore=tests/integration
@@ -95,6 +98,7 @@ knowledge_base/
 │  │ Step 1: PDF 转 Markdown                                          │
 │  │ document_loader.convert_pdfs()                                   │
 │  │ Docling 将 PDF 转为结构化 .md，保留表格；同名 .md 已存在则跳过       │
+│  │ v3.1：只扫描当前 RAG_PROFILE 对应的 knowledge_base/<profile>/ 目录 │
 │  └──────────────────────────────┬──────────────────────────────────┘
 │                                 │
 │                                 ▼
@@ -131,7 +135,7 @@ knowledge_base/
      │ retriever.build_index()                                          │
      │ BGE-M3 Embedding → ChromaDB（含 original_text 存入 metadata）    │
      │ BM25 基于原始文本构建本地倒排索引                                   │
-     │ v3.0：Chroma 持久化到 .chroma_index，按 chunk hash 增量跳过已索引内容 │
+     │ v3.1：Chroma 持久化到 knowledge_base/<profile>/chroma_db，按 hash 增量跳过 │
      └──────────────────────────────┬──────────────────────────────────┘
                                     │
                                     ▼
@@ -145,6 +149,14 @@ knowledge_base/
      │ 缓存：.question_cache.json 存储 chunk_MD5 → 问题列表               │
      │       避免重复调用 LLM；文档内容变更时 MD5 失效自动重新生成           │
      └──────────────────────────────────────────────────────────────────┘
+```
+
+v3.1 profile 隔离路径：
+
+```text
+RAG_PROFILE=enterprise → knowledge_base/enterprise → knowledge_base/enterprise/chroma_db → agentic_rag_enterprise / *_enterprise_block / *_enterprise_row
+RAG_PROFILE=datasheet  → knowledge_base/datasheet  → knowledge_base/datasheet/chroma_db  → agentic_rag_datasheet / *_datasheet_block / *_datasheet_row
+RAG_PROFILE=all        → knowledge_base            → knowledge_base/chroma_db            → agentic_rag / agentic_rag_block / agentic_rag_row（仅调试/兼容）
 ```
 
 > 普通文档预处理在 `app.py` 启动时自动执行（已有缓存则跳过）。
@@ -204,7 +216,7 @@ Agentic_RAG/
 ├── test_pdf_render.py          # 调试脚本：PDF 页面渲染为图片，验证截图清晰度
 ├── llm.py                      # LLM 调用封装
 ├── utils.py                    # 工具函数（实体抽取、表格清洗、LLM 分类）
-├── config.py                   # 全局配置项（含 DATASHEET_SOURCES 白名单）
+├── config.py                   # 全局配置项（RAG_PROFILE、profile 路径、collection 名、DATASHEET_SOURCES 白名单）
 │
 ├── skills/                     # 可插拔检索技能
 │   ├── __init__.py             # 动态加载器（扫描 search_*.py）
@@ -222,20 +234,22 @@ Agentic_RAG/
 ├── config/
 │   └── region_classification.json        # 报销地区分类规则（A/B/C 类城市清单）
 │
-├── knowledge_base/             # 知识库文档
-│   ├── 报销相关_clean.md
-│   ├── 考勤&休假&福利指引20251023_clean.md
-│   ├── OA新员工-行政指引2025.7.7 _clean.md
-│   ├── 【光峰】新员工IT指引_clean.md
-│   ├── 资产管理流程.pdf         # 原始 PPT 转 PDF，图片型文档
-│   ├── 资产管理流程_clean.md    # 视觉提取生成（run_vision_extract.py），含 __PAGE_IMG__ 标记
-│   ├── dlpc3436.pdf / dlpc3436.md / dlpc3436_clean.md    # TI DLP Pico 投影芯片 datasheet
-│   ├── HDMI 2.1b Specification.pdf / HDMI2.0.pdf / HDMI_1.4(1).pdf   # HDMI 协议规格书
-│   ├── DVI_1.0.pdf / EIA-CEA-861-D.pdf                   # 显示协议规格书
-│   ├── .structure/             # Phase 1 结构化 digest（datasheet 专用）
-│   │   └── dlpc3436.structure.json
-│   ├── .page_cache/            # PDF 页面图片缓存（pdf_vision_qa.py 自动生成）
-│   └── .question_cache.json    # 增强索引问题缓存（自动生成，按 chunk MD5 索引）
+├── knowledge_base/             # v3.1 profile 化知识库文档
+│   ├── enterprise/             # 企业内部制度 profile
+│   │   ├── 报销相关.md / 报销相关_clean.md
+│   │   ├── 考勤&休假&福利指引20251023_clean.md
+│   │   ├── OA新员工-行政指引2025.7.7 .md / _clean.md
+│   │   ├── 【光峰】新员工IT指引.md / _clean.md
+│   │   ├── 资产管理流程.pdf / 资产管理流程.md / 资产管理流程_clean.md
+│   │   ├── .page_cache/        # 当前 profile 的 PDF 页面图片缓存
+│   │   ├── .question_cache.json# 当前 profile 的增强索引问题缓存
+│   │   └── chroma_db/          # 当前 profile 的 Chroma 持久化索引
+│   ├── datasheet/              # 英文规格书 / 协议规格书 profile
+│   │   ├── dlpc3436.pdf / dlpc3436.md / dlpc3436_clean.md
+│   │   ├── DVI_1.0.pdf / DVI_1.0.md / DVI_1.0_clean.md
+│   │   ├── .structure/         # Phase 1 结构化 digest（datasheet 专用）
+│   │   │   └── dlpc3436.structure.json
+│   │   └── chroma_db/          # datasheet profile 的 Chroma 持久化索引
 │
 ├── evaluation/                 # Datasheet baseline 评估资产（详见「Datasheet RAG 子系统」一节）
 │   ├── datasheet_baseline_cases.json          # 15 个回归 case（parameter / enumeration / connection / support / state / adversarial）
@@ -244,7 +258,7 @@ Agentic_RAG/
 │
 ├── tests/                      # 测试
 │   ├── 流程类回归
-│   │   ├── test_chunking.py / test_executor.py / test_planner.py / test_retriever.py
+│   │   ├── test_chunking.py / test_executor.py / test_planner.py / test_retriever.py / test_knowledge_base_profile.py
 │   │   ├── test_query_understanding.py / test_utils.py / test_generator.py
 │   │   ├── test_search_expense_reimbursement.py
 │   │   └── integration/test_llm_classify_reasoning.py
@@ -260,7 +274,7 @@ Agentic_RAG/
 │       └── test_specification_reading_path.py
 │
 ├── tasks/
-│   ├── run_persistent_index.py             # v3.0：离线构建/增量更新 Chroma 持久化索引
+│   ├── run_persistent_index.py             # v3.1：按 RAG_PROFILE 离线构建/增量更新 Chroma 持久化索引
 │   ├── datasheet_rag_plan.md               # Datasheet RAG Phase 0~7 演进计划
 │   ├── datasheet_rag_status.md             # Datasheet RAG 当前完成状态
 │   ├── large_kb_indexing_scalability.md    # v3.0 大知识库索引可扩展性记录
@@ -410,9 +424,9 @@ LLM 兜底判断（llm_classify_region）
 
 对每个 chunk 调用 LLM 生成 8-10 个用户视角的问题，问题向量作为检索入口，原始 chunk 作为返回内容。解决用户提问用语与文档术语不一致的语义鸿沟。
 
-生成结果持久化到 `knowledge_base/.question_cache.json`，缓存键为 chunk MD5，重启直接复用。`config.py` 中 `AUGMENT_QUESTIONS = True` 开启。
+生成结果持久化到当前 profile 的 `knowledge_base/<profile>/.question_cache.json`，缓存键为 chunk MD5，重启直接复用。`config.py` 中 `AUGMENT_QUESTIONS = True` 开启。
 
-> v3.0 备注：当前大知识库启动链路中 `AUGMENT_QUESTIONS = False`，先保证 6270+ chunks 的基础索引可稳定启动；如后续恢复增强问题生成，建议先通过 `AUGMENT_MAX_CHUNKS` 限流，或改为离线/后台增量任务。
+> v3.1 备注：`AUGMENT_QUESTIONS` 当前可开启；datasheet chunk 会被 `_should_augment()` 强制跳过，企业 profile 可继续使用增强问题。大 KB 恢复全量增强时建议先通过 `AUGMENT_MAX_CHUNKS` 限流，或改为离线/后台增量任务。
 
 这一步很关键，能够让Chunk更容易的和自然语言对接上。
 
@@ -420,16 +434,18 @@ LLM 兜底判断（llm_classify_region）
 
 v3.0 解决新增大规格书后页面长时间停留在“加载知识库”的问题。核心变化：
 
-1. **分批写入 Chroma**：`INDEX_BATCH_SIZE = 16`，每批打印范围式进度，避免一次性 add 数千 chunks 时长时间无日志。
-2. **Chroma 持久化**：`PERSIST_CHROMA_INDEX = True`，索引写入 `.chroma_index/`，重启不再清空 collection。
+1. **分批写入 Chroma**：`INDEX_BATCH_SIZE = 64`，每批打印范围式进度，避免一次性 add 数千 chunks 时长时间无日志。
+2. **Chroma 持久化**：`PERSIST_CHROMA_INDEX = True`，索引写入当前 profile 的 `knowledge_base/<profile>/chroma_db/`，重启不再清空 collection。
 3. **chunk hash 增量跳过**：基于 `source + chunk_index + normalized_text/text` 生成稳定 ID，已存在 chunk 不再重复 embedding。
 4. **离线构建入口**：首次大规模索引建议先运行 `tasks/run_persistent_index.py`，再启动 Streamlit。
-5. **启动期增强关闭**：当前关闭 `AUGMENT_QUESTIONS`，避免数千 chunk 串行调用 LLM 生成增强问题。
+5. **启动期增强可控**：`AUGMENT_QUESTIONS` / `AUGMENT_MAX_CHUNKS` 控制增强问题生成；datasheet chunk 仍强制跳过自然语言增强，避免污染精确技术索引。
+6. **v3.1 profile 隔离**：`RAG_PROFILE` 决定 source dir、Chroma persist dir、collection names、question cache、page cache，企业制度与规格书不再共享运行时路径。
 
 首次/增量构建命令：
 
 ```bash
-.venv/bin/python tasks/run_persistent_index.py >> demo.log 2>&1
+RAG_PROFILE=datasheet .venv/bin/python tasks/run_persistent_index.py >> demo.log 2>&1
+# 或：RAG_PROFILE=enterprise .venv/bin/python tasks/run_persistent_index.py >> demo.log 2>&1
 ```
 
 验证命令：
@@ -444,14 +460,17 @@ grep -Ei 'traceback|exception|error|failed|runtimeerror|module' demo.log
 
 ```text
 24 passed in 0.05s
+[IndexRunner] start large KB persistent indexing profile=datasheet kb=.../knowledge_base/datasheet
 [IndexRunner] loaded chunks=6270
 [Retriever] 原始新增索引建立完成，共 6270 条；总 chunks 6270 条
-.chroma_index = 56M
+knowledge_base/datasheet/chroma_db = 已生成持久化索引
 HTTP/1.1 200 OK
 [Retriever] 原始跳过已存在索引：6270/6270
 [Retriever] 原始索引无新增，共 6270 条
 [Retriever] 原始新增索引建立完成，共 0 条；总 chunks 6270 条
 ```
+
+v3.1 profile 隔离新增回归：`tests/test_knowledge_base_profile.py` 覆盖 profile 子目录选择、collection name 加 profile 后缀、question cache 与 `chroma_db` 指向当前 profile。
 
 处理过程记录见：`tasks/large_kb_indexing_scalability.md`。
 
@@ -478,8 +497,8 @@ HTTP/1.1 200 OK
 |---|---|---|
 | **Phase 0** | 裸 baseline 量化 | `evaluation/datasheet_baseline_cases.json`（15 cases）+ baseline report |
 | **Phase 0.5** | datasheet 专用 generator prompt 雏形 | `_TECHNICAL_DATASHEET_PROMPT_TEMPLATE` |
-| **Phase 1** | 文档结构化 digest（离线规则） | `knowledge_base/.structure/dlpc3436.structure.json`（section_tree / table_catalog / row_index / entity_inventory / alias_graph） |
-| **Phase 2** | 双层物理索引（block + row） | `agentic_rag_block` / `agentic_rag_row` 两个 collection |
+| **Phase 1** | 文档结构化 digest（离线规则） | `knowledge_base/datasheet/.structure/dlpc3436.structure.json`（section_tree / table_catalog / row_index / entity_inventory / alias_graph） |
+| **Phase 2** | 双层物理索引（block + row） | `agentic_rag_<profile>_block` / `agentic_rag_<profile>_row` 两个 collection |
 | **Phase 3** | 索引 + 查询双向 normalization | `normalize_datasheet_text()` |
 | **Phase 4** | structure-driven bundle planner | `plan_datasheet_evidence_bundle()` 输出结构化 evidence bundle |
 | **Phase 5** | datasheet generator 结构化引用 | 回答末尾 `[Section: ...; Table: ...; Row: ...; line: ...]` |
@@ -630,7 +649,9 @@ python scripts/regen_datasheet_structure.py
 
 | 配置项 | 当前值 | 说明 |
 |--------|--------|------|
-| `KNOWLEDGE_BASE_DIR` | `./knowledge_base` | 知识库目录 |
+| `RAG_PROFILE` | `"datasheet"`（可被环境变量覆盖） | v3.1 profile 选择：`enterprise` / `datasheet` / `all` |
+| `KNOWLEDGE_BASE_ROOT` | `./knowledge_base` | profile 根目录 |
+| `KNOWLEDGE_BASE_DIR` | `get_knowledge_base_dir()` | 当前 profile 的知识库目录，如 `knowledge_base/datasheet` |
 | `CHUNK_SIZE` | `600` | chunk 最大字符数 |
 | `TOP_K` | `5` | 检索返回条数 |
 | `EMBEDDING_MODEL` | `"BAAI/bge-m3"` | Embedding 模型 |
@@ -641,11 +662,12 @@ python scripts/regen_datasheet_structure.py
 | `OPENAI_API_KEY` | （明文，部署前替换） | API 密钥；建议改为环境变量读取（待办 R-5）|
 | `OPENAI_MODEL` | `"gpt-5.4"` | 网关侧的模型路由名 |
 | `OPENAI_OPTIONS` | `{"temperature": 0}` | OpenAI Chat Completions 参数 |
-| `AUGMENT_QUESTIONS` | `False` | v3.0 当前关闭启动期增强问题生成；避免大知识库首次加载串行调用 LLM |
-| `AUGMENT_MAX_CHUNKS` | `None` | 增强问题生成上限；恢复增强时可先限流 |
-| `INDEX_BATCH_SIZE` | `16` | v3.0 Chroma 分批写入大小；范围式日志便于观察进度 |
-| `PERSIST_CHROMA_INDEX` | `True` | v3.0 启用 Chroma 持久化，避免每次启动全量 embedding |
-| `CHROMA_PERSIST_DIR` | `.chroma_index` | v3.0 Chroma 持久化索引目录 |
+| `AUGMENT_QUESTIONS` | `True` | 企业 profile 可生成增强问题；datasheet chunk 仍由 `_should_augment()` 强制跳过 |
+| `AUGMENT_MAX_CHUNKS` | `None` | 增强问题生成上限；大 KB 恢复增强时可先限流 |
+| `INDEX_BATCH_SIZE` | `64` | Chroma 分批写入大小；范围式日志便于观察进度 |
+| `PERSIST_CHROMA_INDEX` | `True` | 启用 Chroma 持久化，避免每次启动全量 embedding |
+| `CHROMA_PERSIST_DIR` | `get_chroma_persist_dir()`，即 `knowledge_base/<profile>/chroma_db` | v3.1 profile 级 Chroma 持久化索引目录 |
+| `get_chroma_collection_names()` | `agentic_rag_<profile>` / `agentic_rag_<profile>_block` / `agentic_rag_<profile>_row` | v3.1 profile 级 collection 命名，避免不同知识库共用 collection |
 | `DATASHEET_SOURCES` | DLPC3436 + HDMI 1.4/2.0/2.1b + DVI 1.0 + EIA-CEA-861-D 三种文件名变体（`.pdf` / `.md` / `_clean.md`） | datasheet 白名单。命中后：① doc_cleaner 走保守清洗；② chunk 标记 `is_datasheet=True`；③ index_augmenter 跳过该 chunk；④ retriever 走 normalize + entity_tokens 抽取 |
 
 ---
@@ -656,6 +678,7 @@ python scripts/regen_datasheet_structure.py
 |------|------|-----|---------|
 | 单元测试 | `tests/` | Mock | 流程正确性、prompt 构造、结果处理 |
 | 集成测试 | `tests/integration/` | 真实调用 | LLM 推理能力（省会识别、排除法推断）|
+| Profile 隔离 | `tests/test_knowledge_base_profile.py` | 无 | `RAG_PROFILE` 子目录、Chroma collection、persist dir、question cache 隔离 |
 | Datasheet 单点 | `tests/test_dlpc3436_document_evidence.py` / `test_search_datasheet.py` / `test_dlpc_datasheet_retrieval.py` | Mock | DLPC 单点 evidence + retrieval 回归 |
 | Datasheet PDF / chunk | `tests/test_datasheet_pdf_pipeline.py` / `test_datasheet_phase2_phase3_phase6.py` / `test_datasheet_source_metadata.py` | 无 | PDF→md→chunk schema、is_datasheet 元数据、normalize 双向一致 |
 | Datasheet 索引 | `tests/test_datasheet_dual_index.py` / `test_datasheet_structure_digest.py` / `test_datasheet_structure_planner.py` | 无 | block/row 双 collection 物理分离、structure digest 必须锚点、bundle planner |
@@ -801,12 +824,13 @@ python scripts/regen_datasheet_structure.py
 **问题**：新增 DVI / CEA / HDMI 多个大规格书后，知识库规模达到 6270 chunks。旧实现每次启动都一次性向 Chroma add 全量 chunks，Streamlit 页面长时间停留在“加载知识库”，日志无推进；仅改为分批后仍会重复全量 embedding，扩展性不足。
 
 **解决方案**：
-1. `retriever.py` 改为分批写入 Chroma，`INDEX_BATCH_SIZE = 16`，每批输出 `1-16/6270` 这类范围式进度。
-2. 启用 `chromadb.PersistentClient(path=".chroma_index")`，持久化索引目录为 `.chroma_index/`。
+1. `retriever.py` 改为分批写入 Chroma，`INDEX_BATCH_SIZE = 64`，每批输出范围式进度。
+2. 启用 `chromadb.PersistentClient(path=str(CHROMA_PERSIST_DIR))`，v3.1 后持久化索引目录为当前 profile 的 `knowledge_base/<profile>/chroma_db/`。
 3. 基于 `source + chunk_index + normalized_text/text` 生成 chunk hash ID，已存在 ID 直接跳过，只对新增/变化 chunk 做 embedding。
-4. 新增 `tasks/run_persistent_index.py`，支持在 Streamlit 外离线构建/更新大索引。
-5. 暂时关闭 `AUGMENT_QUESTIONS`，避免启动期对数千 chunks 串行调用 LLM；后续恢复时应改为离线/后台增量任务。
+4. 新增 `tasks/run_persistent_index.py`，支持在 Streamlit 外按 `RAG_PROFILE` 离线构建/更新大索引。
+5. `AUGMENT_QUESTIONS` 与 `AUGMENT_MAX_CHUNKS` 控制增强问题生成；datasheet chunk 继续跳过增强，避免精确规格书查询被自然语言问题污染。
 6. 修复 Chroma 持久化 collection 的 `embedding_function` 冲突：持久化模式下 `get_or_create_collection()` 不再传新的 embedding function。
+7. v3.1 新增 profile 隔离：`get_knowledge_base_dir()` / `get_chroma_persist_dir()` / `get_chroma_collection_names()` 将 source、缓存、collection 全部绑定到 `enterprise` 或 `datasheet`。
 
 **验证**：
 ```text
@@ -817,6 +841,29 @@ curl http://127.0.0.1:8501/ -> HTTP/1.1 200 OK
 ```
 
 详细过程记录：`tasks/large_kb_indexing_scalability.md`。
+
+---
+
+### v3.1：Knowledge Base Profile 隔离
+
+**问题**：企业制度文档和英文规格书混放在同一运行时路径时，会出现三类污染：
+1. source 级污染：企业 policy query 可能召回 datasheet chunk，datasheet query 也可能被企业制度 chunk 占据 top_k。
+2. 索引级污染：Chroma collection / persist dir 共用后，不同知识库切换时容易复用旧 collection。
+3. 缓存级污染：`.question_cache.json`、`.page_cache`、离线索引脚本若仍指向根目录，会导致拆目录后仍读旧缓存或重新生成增强问题。
+
+**解决方案**：
+1. `config.py` 新增 `RAG_PROFILE=enterprise|datasheet|all`，默认可被环境变量覆盖。
+2. `get_knowledge_base_dir()` 将加载范围限定到 `knowledge_base/<profile>`。
+3. `get_chroma_persist_dir()` 将持久化索引放到 `knowledge_base/<profile>/chroma_db`。
+4. `get_chroma_collection_names()` 为 collection 添加 profile 后缀，例如 `agentic_rag_datasheet_block` / `agentic_rag_datasheet_row`。
+5. `index_augmenter.get_question_cache_file()` 将增强问题缓存写入当前 profile 目录。
+6. `app.py` 启动日志打印当前 `RAG_PROFILE` 与 KB 路径，页面图片缓存解析也基于当前 profile。
+7. `tasks/run_persistent_index.py` 按当前 profile 离线构建索引，并打印 profile/kb 路径。
+
+**验证**：
+```text
+tests/test_knowledge_base_profile.py：覆盖 profile 子目录选择、profile-scoped collection names、Retriever collection 名、question cache 与 chroma_db 路径。
+```
 
 ---
 
