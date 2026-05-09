@@ -1,0 +1,12 @@
+# Python runtime artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Local vector DB / runtime indexes
+chroma_db/
+
+# Generated markdown converted from source PDFs
+knowledge_base/*.md
+!knowledge_base/*_clean.md
+

@@ -12,6 +12,13 @@ CHUNK_SIZE = 600
 # 检索
 TOP_K = 5
 
+# Chroma 索引持久化
+# True  → 使用本地持久化目录，按内容 hash 跳过已存在 chunk，避免 Streamlit 每次启动全量 embedding
+# False → 使用内存索引，每次启动重建，适合快速/隔离测试
+PERSIST_CHROMA_INDEX = True
+CHROMA_PERSIST_DIR = Path(__file__).parent / "chroma_db"
+INDEX_BATCH_SIZE = 64
+
 # Embedding 模型（供 Retriever 使用）
 # "default" → ChromaDB 内置 all-MiniLM-L6-v2（无需额外安装）
 # "BAAI/bge-m3" → 多语言模型，中文效果显著更好（需 pip install sentence-transformers）
@@ -35,6 +42,8 @@ OPENAI_OPTIONS = {"temperature": 0}
 # True  → 首次启动时调用 LLM 生成，结果缓存到 knowledge_base/.question_cache.json
 # False → 跳过增强，适合快速调试
 AUGMENT_QUESTIONS = True
+# 可选限制增强生成的 chunk 数；None 表示不限制。
+AUGMENT_MAX_CHUNKS = None
 
 # Datasheet source 白名单：用于保守清洗、chunk metadata 标记和后续跳过增强索引。
 # Phase 0 只纳入 DLPC3436；Phase 1 之后再扩展 DLPC3437 等同系列手册。
