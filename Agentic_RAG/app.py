@@ -7,6 +7,7 @@ Agentic RAG — Streamlit 前端
 
 import streamlit as st
 
+import inspect
 import re
 from pathlib import Path
 
@@ -15,12 +16,87 @@ from config import get_knowledge_base_dir, get_rag_profile
 from document_loader import load_documents
 from evaluator import get_stats, record_satisfied, record_unsatisfied
 from retriever import Retriever
+from structured_refs import (
+    format_reference_label,
+    markdown_tables_to_html,
+    resolve_structured_reference_detail,
+    split_structured_references,
+)
 
 
 # ── 页面配置 ──────────────────────────────────────────────────────────────────
 
 st.set_page_config(page_title="Agentic RAG", layout="wide")
 st.title("🤖 Agentic RAG")
+
+st.markdown(
+    """
+    <style>
+    div[data-testid="stDialog"] {
+        width: min(92vw, 1120px);
+    }
+
+    div[data-testid="stDialog"] div[data-testid="stMarkdownContainer"] {
+        max-width: 100%;
+        overflow-x: auto;
+    }
+
+    div[data-testid="stDialog"] div[data-testid="stMarkdownContainer"] table {
+        display: block;
+        max-width: 100%;
+        overflow-x: auto;
+        white-space: nowrap;
+    }
+
+    div[data-testid="stDialog"] div[data-testid="stMarkdownContainer"] th,
+    div[data-testid="stDialog"] div[data-testid="stMarkdownContainer"] td {
+        min-width: max-content;
+        vertical-align: top;
+    }
+
+    .structured-ref-content {
+        max-width: 100%;
+        overflow-x: auto;
+        padding-bottom: 0.5rem;
+    }
+
+    .structured-ref-content p {
+        margin: 0 0 0.85rem 0;
+        line-height: 1.7;
+    }
+
+    .structured-ref-table-wrap {
+        width: 100%;
+        overflow-x: auto;
+        margin: 1rem 0;
+        border: 1px solid rgba(49, 51, 63, 0.18);
+        border-radius: 0.5rem;
+    }
+
+    .structured-ref-table {
+        width: max-content;
+        min-width: 100%;
+        border-collapse: collapse;
+        table-layout: auto;
+        white-space: nowrap;
+    }
+
+    .structured-ref-table th,
+    .structured-ref-table td {
+        padding: 0.65rem 0.85rem;
+        border: 1px solid rgba(49, 51, 63, 0.14);
+        text-align: left;
+        vertical-align: top;
+    }
+
+    .structured-ref-table th {
+        background: rgba(49, 51, 63, 0.05);
+        font-weight: 700;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 
 # ── 知识库初始化（仅首次加载）────────────────────────────────────────────────
@@ -47,6 +123,8 @@ if "history" not in st.session_state:
 if "eval_rated" not in st.session_state:
     # 当前结果是否已评价；False 表示待评价，提交新问题时自动记为满意
     st.session_state.eval_rated = True
+if "selected_structured_ref" not in st.session_state:
+    st.session_state.selected_structured_ref = None
 
 
 # ── 侧边栏 ────────────────────────────────────────────────────────────────────
@@ -66,6 +144,7 @@ with st.sidebar:
                 st.markdown(item["answer"])
                 if st.button("重新查看详情", key=f"history_load_{i}"):
                     st.session_state.result = item["result"]
+                    st.session_state.selected_structured_ref = None
                     st.rerun()
 
         if st.button("清空历史", type="secondary"):
@@ -183,6 +262,67 @@ def _extract_cited_images(answer: str, executed_steps: list) -> list[Path]:
     return page_imgs
 
 
+def _open_structured_reference_dialog(detail) -> None:
+    """展示结构化引用原文；Streamlit 低版本没有 dialog 时自动降级。"""
+    dialog = getattr(st, "dialog", None) or getattr(st, "experimental_dialog", None)
+    if dialog:
+        dialog_kwargs = {}
+        try:
+            if "width" in inspect.signature(dialog).parameters:
+                dialog_kwargs["width"] = "large"
+        except (TypeError, ValueError):
+            pass
+
+        @dialog(detail.title, **dialog_kwargs)
+        def _show_dialog():
+            if detail.source:
+                st.caption(f"来源：{detail.source}")
+            if detail.found:
+                st.markdown(
+                    f'<div class="structured-ref-content">{markdown_tables_to_html(detail.content)}</div>',
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.warning(detail.message)
+
+        _show_dialog()
+        return
+
+    with st.expander(f"📖 {detail.title}", expanded=True):
+        if detail.source:
+            st.caption(f"来源：{detail.source}")
+        if detail.found:
+            st.markdown(
+                f'<div class="structured-ref-content">{markdown_tables_to_html(detail.content)}</div>',
+                unsafe_allow_html=True,
+            )
+        else:
+            st.warning(detail.message)
+
+
+def _render_structured_references(refs: list, executed_steps: list) -> None:
+    """将结构化引用渲染成可点击按钮。"""
+    if not refs:
+        st.session_state.selected_structured_ref = None
+        return
+
+    st.markdown("#### 结构化引用")
+    cols = st.columns(min(len(refs), 4))
+    for i, ref in enumerate(refs):
+        label = format_reference_label(ref)
+        if cols[i % 4].button(label, key=f"structured_ref_{i}_{ref.raw}"):
+            st.session_state.selected_structured_ref = i
+
+    selected = st.session_state.get("selected_structured_ref")
+    if selected is not None and 0 <= selected < len(refs):
+        detail = resolve_structured_reference_detail(
+            refs[selected],
+            executed_steps,
+            get_knowledge_base_dir(),
+        )
+        _open_structured_reference_dialog(detail)
+
+
 def _render_result(result: dict) -> None:
     """将 RunResult 的各部分渲染到页面上。"""
 
@@ -239,11 +379,13 @@ def _render_result(result: dict) -> None:
 
     # 最终回答（剔除内部页码标记，不暴露给用户）
     display_answer = _CITED_PAGE_RE.sub("", result["answer"]).strip()
+    display_answer, structured_refs = split_structured_references(display_answer)
     st.markdown("### 💡 回答")
     if result.get("needs_clarification"):
         st.info(display_answer)
     else:
         st.markdown(display_answer)
+    _render_structured_references(structured_refs, result.get("executed_steps", []))
 
     # 图片来源页展示：根据 Generator 在回答中标注的 [引用页面: 第N页] 来确定显示哪些图片
     page_images = _extract_cited_images(result["answer"], result.get("executed_steps", []))
@@ -267,6 +409,7 @@ if submitted and question.strip():
         status.update(label="完成", state="complete")
         st.session_state.result = result
         st.session_state.eval_rated = False  # 新结果等待评价
+        st.session_state.selected_structured_ref = None
         # 追加到历史记录（最新在前）
         st.session_state.history.insert(0, {
             "question": result["question"],

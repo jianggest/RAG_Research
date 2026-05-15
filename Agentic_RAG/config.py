@@ -43,7 +43,7 @@ def get_chroma_persist_dir(profile: str | None = None) -> Path:
 CHUNK_SIZE = 600
 
 # 检索
-TOP_K = 5
+TOP_K = 10
 
 # Chroma 索引持久化
 # True  → 使用本地持久化目录，按内容 hash 跳过已存在 chunk，避免 Streamlit 每次启动全量 embedding
