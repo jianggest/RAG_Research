@@ -32,7 +32,7 @@ _PLAN_PROMPT_TEMPLATE = """\
    必须按【业务动作】选 Skill，而不是按【系统名】。
    系统名只表示"在哪个系统里操作"，业务知识在对应业务域 Skill；IT 指引 Skill 只覆盖账号/登录/密码/网络等基础设施层。
    反例：『OA系统出差申请流程』——业务动作是"出差申请"，应选报销/差旅 Skill，而不是因为出现"OA"就选 IT 指引 Skill。
-9. 【重要·datasheet/芯片手册】当问题包含 DLPC、datasheet、芯片型号、oscillator、clock、PLL、timing、electrical characteristics、MHz/ns/ppm/V/mA 等硬件规格词时，优先选择 search_datasheet；不要把 DLPC 文档按企业制度 Skill 处理。
+9. 【重要·datasheet/芯片手册】当问题包含 DLPC、datasheet、芯片型号、oscillator、clock、PLL、timing、electrical characteristics、MHz/ns/ppm/V/mA 等硬件规格词时，优先选择 search_datasheet_v2；仅当 search_datasheet_v2 不在可用 Skill 列表中时，才退回 search_datasheet；不要把 DLPC 文档按企业制度 Skill 处理。
 10. 只输出 JSON，不要有任何其他文字
 {query_context}
 输出格式：

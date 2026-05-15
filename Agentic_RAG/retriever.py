@@ -417,6 +417,153 @@ class SearchResult(TypedDict):
     refs_outbound: list[str]
 
 
+_CROSS_REF_SECTION_HEADING_RE = re.compile(r"^#{1,6}\s+(\d+(?:\.\d+)*)\b")
+_CROSS_REF_LABEL_RE = re.compile(
+    r"\b(Figure|Table|Section|Chapter)\s+([\w.\-]+?\d[\w.\-]*)",
+    re.IGNORECASE,
+)
+_CROSS_REF_FOLLOW_LIMIT = 5
+_CROSS_REF_SCORE_FACTOR = 0.7
+
+
+def _normalize_cross_ref(ref: str) -> str:
+    """Normalize a cross-reference label to 'Kind Number'."""
+    match = _CROSS_REF_LABEL_RE.search(ref or "")
+    if not match:
+        return " ".join((ref or "").split())
+    kind = match.group(1).capitalize()
+    number = match.group(2).rstrip(".,;:")
+    return f"{kind} {number}"
+
+
+def _cross_ref_labels_for_chunk(chunk: dict) -> set[str]:
+    """Return structural labels that can be targeted by refs_outbound."""
+    labels: set[str] = set()
+    text = chunk.get("text", "") or ""
+
+    section_id = str(chunk.get("section_id") or "").strip()
+    if section_id:
+        labels.add(f"Section {section_id}")
+
+    for line in text.splitlines():
+        heading = _CROSS_REF_SECTION_HEADING_RE.match(line.strip())
+        if heading:
+            labels.add(f"Section {heading.group(1)}")
+            if "." not in heading.group(1):
+                labels.add(f"Chapter {heading.group(1)}")
+        for match in _CROSS_REF_LABEL_RE.finditer(line):
+            labels.add(_normalize_cross_ref(match.group(0)))
+
+    return labels
+
+
+def _result_key(result: dict) -> str:
+    return (result.get("source", ""), (result.get("text") or "")[:180])
+
+
+def _chunk_to_search_result(
+    chunk: dict,
+    score: float,
+    *,
+    facet: str | None = None,
+    followed_ref: str | None = None,
+) -> SearchResult:
+    result = SearchResult(
+        text=chunk.get("text", ""),
+        source=chunk.get("source", ""),
+        score=round(float(score), 4),
+        is_table=bool(chunk.get("is_table", False)),
+        is_datasheet=bool(chunk.get("is_datasheet", False)),
+        index_kind=chunk.get("index_kind", "block"),
+        anchors_used=list(chunk.get("anchors_used") or []),
+        anchors_defined=list(chunk.get("anchors_defined") or []),
+        refs_outbound=list(chunk.get("refs_outbound") or []),
+    )
+    if facet:
+        result["facet"] = facet
+    if followed_ref:
+        result["followed_ref"] = followed_ref
+    return result
+
+
+def _follow_cross_refs(
+    top_k_results: list[SearchResult],
+    chunks: list[dict],
+    max_refs: int = _CROSS_REF_FOLLOW_LIMIT,
+) -> list[SearchResult]:
+    """Follow refs_outbound from top-K results to chunks in the same source.
+
+    The lookup uses chunk metadata / structure labels (source + ref), not a second
+    lexical search. Followed chunks are scored at 0.7x of the source result and
+    tagged with facet='cross_ref_followed'.
+    """
+    if not top_k_results or not chunks or max_refs <= 0:
+        return []
+
+    by_source_ref: dict[tuple[str, str], list[dict]] = {}
+    for chunk in chunks:
+        source = chunk.get("source", "")
+        if not source:
+            continue
+        for label in _cross_ref_labels_for_chunk(chunk):
+            by_source_ref.setdefault((source, label), []).append(chunk)
+
+    followed: list[SearchResult] = []
+    seen = {_result_key(r) for r in top_k_results}
+    refs_seen: set[tuple[str, str]] = set()
+
+    for result in top_k_results:
+        source = result.get("source", "")
+        if not source:
+            continue
+        base_score = float(result.get("score", 0) or 0)
+        for raw_ref in result.get("refs_outbound", []) or []:
+            ref = _normalize_cross_ref(raw_ref)
+            ref_key = (source, ref)
+            if ref_key in refs_seen:
+                continue
+            refs_seen.add(ref_key)
+            for chunk in by_source_ref.get(ref_key, []):
+                candidate = _chunk_to_search_result(
+                    chunk,
+                    base_score * _CROSS_REF_SCORE_FACTOR,
+                    facet="cross_ref_followed",
+                    followed_ref=ref,
+                )
+                key = _result_key(candidate)
+                if key in seen:
+                    continue
+                seen.add(key)
+                followed.append(candidate)
+                if len(followed) >= max_refs:
+                    return followed
+                break
+
+    return followed
+
+
+def _with_cross_refs(
+    base_results: list[SearchResult],
+    chunks: list[dict],
+    top_k: int,
+) -> list[SearchResult]:
+    """Add followed cross-ref chunks to the candidate pool, then trim to top_k."""
+    followed = _follow_cross_refs(base_results, chunks)
+    if not followed:
+        return base_results[:top_k]
+
+    combined: list[SearchResult] = []
+    seen: set[tuple[str, str]] = set()
+    for result in base_results + followed:
+        key = _result_key(result)
+        if key in seen:
+            continue
+        seen.add(key)
+        combined.append(result)
+
+    return sorted(combined, key=lambda r: r.get("score", 0), reverse=True)[:top_k]
+
+
 @dataclass
 class DatasheetIndexConfig:
     """Optional Phase-2 datasheet row-index configuration."""
@@ -741,11 +888,14 @@ class Retriever:
         bm25_results = self.bm25_search(query, top_k=top_k * 2)
 
         if not bm25_results:
-            return vector_results[:top_k]
+            base_results = vector_results[:top_k]
+            return _with_cross_refs(base_results, self._chunks, top_k)
         if not vector_results:
-            return bm25_results[:top_k]
+            base_results = bm25_results[:top_k]
+            return _with_cross_refs(base_results, self._chunks, top_k)
 
-        return _rrf_merge(vector_results, bm25_results, top_k=top_k)
+        base_results = _rrf_merge(vector_results, bm25_results, top_k=top_k)
+        return _with_cross_refs(base_results, self._chunks, top_k)
 
     def search(
         self,

@@ -78,3 +78,28 @@ class TestPlanFunction:
             result = plan("深圳住宿费", skill_descriptions="")
 
         assert "error" in result
+
+    def test_datasheet_rule_prefers_v2_with_v1_fallback(self):
+        """datasheet 路由规则应优先引导到 V2, 并保留 V1 兜底"""
+        captured = {}
+        mock_response = (
+            '{"reasoning": "datasheet 查询走 V2", '
+            '"steps": [{"step_id": 1, "skill": "search_datasheet_v2", '
+            '"query": "DLPC3436 oscillator timing", "depends_on": null}]}'
+        )
+
+        def fake_call_llm(prompt):
+            captured["prompt"] = prompt
+            return mock_response
+
+        skill_descriptions = (
+            "- search_datasheet_v2: 多切面 datasheet 检索\n"
+            "- search_datasheet: datasheet V1 兜底"
+        )
+        with patch("planner.call_llm", side_effect=fake_call_llm):
+            result = plan("DLPC3436 系统 Oscillator Timing 要求", skill_descriptions)
+
+        assert "error" not in result
+        assert result["steps"][0]["skill"] == "search_datasheet_v2"
+        assert "优先选择 search_datasheet_v2" in captured["prompt"]
+        assert "才退回 search_datasheet" in captured["prompt"]
