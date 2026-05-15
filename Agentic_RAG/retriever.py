@@ -34,6 +34,21 @@ def _chunk_content_id(prefix: str, chunk: dict) -> str:
     return f"{prefix}_{hashlib.md5(fingerprint.encode()).hexdigest()}"
 
 
+# ── 结构锚字段序列化（Chroma metadata 不支持 list，用 "|" 分隔字符串）───────────
+# 锚点值形如 "(1)" / "Figure 6-5"，均不含 "|"，分隔符安全。
+
+def _serialize_anchor_list(items: list[str] | None) -> str:
+    """list[str] → "a|b|c"；None / 空列表 → ""。"""
+    return "|".join(items) if items else ""
+
+
+def _deserialize_anchor_list(value: str | None) -> list[str]:
+    """metadata 中的 "a|b|c" → ["a","b","c"]；None / "" → []。"""
+    if not value:
+        return []
+    return [item for item in value.split("|") if item]
+
+
 _ENTITY_TOKEN_RE = re.compile(
     r"\b(?:TSTPT_?\d+|IIC\d_[A-Z]+|GPIO_\d+|GPIO\d+|PLL_REFCLK_[IO]|PLL\s+REFCLK\s+[IO]|VCC_[A-Z0-9]+|HOST_IRQ|SPI\d_[A-Z0-9]+|[A-Z]{2,}\d*[A-Z0-9_]*)\b"
 )
@@ -110,6 +125,11 @@ def build_datasheet_row_chunks(structure_path: str | Path) -> list[dict]:
             "index_kind": "row",
             "normalized_text": normalized,
             "entity_tokens": extract_datasheet_entity_tokens(original),
+            # 结构锚字段：row chunk 是表格的单行，脚注归属表格整体 chunk，此处用空列表占位
+            # 保持与 block chunk 的 schema 一致，避免下游访问时 KeyError
+            "anchors_used": [],
+            "anchors_defined": [],
+            "refs_outbound": [],
             "row_id": row.get("row_id", ""),
             "table_id": row.get("table_id", ""),
             "section_id": section_id,
@@ -127,6 +147,10 @@ def _metadata_for_chunk(chunk: dict) -> dict:
         "index_kind": chunk.get("index_kind", "block"),
         "is_augmented": bool(chunk.get("is_augmented", False)),
         "original_text": chunk.get("text", ""),
+        # 结构锚字段：ChromaDB metadata 只接受标量，序列化为 "|" 分隔字符串
+        "anchors_used":    _serialize_anchor_list(chunk.get("anchors_used")),
+        "anchors_defined": _serialize_anchor_list(chunk.get("anchors_defined")),
+        "refs_outbound":   _serialize_anchor_list(chunk.get("refs_outbound")),
     }
     for key in ("row_id", "table_id", "section_id"):
         if chunk.get(key) is not None:
@@ -386,6 +410,11 @@ class SearchResult(TypedDict):
     is_table: bool
     is_datasheet: bool
     index_kind: str
+    # 结构锚字段：透传 Chunk 上的同名字段，供 V2 检索做 facet 配对、跨引用跟随等。
+    # 普通文本 chunk 三者皆为空列表。
+    anchors_used: list[str]
+    anchors_defined: list[str]
+    refs_outbound: list[str]
 
 
 @dataclass
@@ -541,6 +570,11 @@ class Retriever:
                             "index_kind":    e.get("index_kind", "block"),
                             "is_augmented":  True,
                             "original_text": e["original_text"],
+                            # 与主索引保持 metadata schema 一致；增强条目透传原 chunk 的锚字段，
+                            # 缺失则置空字符串（"|" 分隔序列化）。
+                            "anchors_used":    _serialize_anchor_list(e.get("anchors_used")),
+                            "anchors_defined": _serialize_anchor_list(e.get("anchors_defined")),
+                            "refs_outbound":   _serialize_anchor_list(e.get("refs_outbound")),
                         } for e in batch],
                     )
                 print(f"[Retriever] 增强问题索引：{len(entries)} 条", flush=True)
@@ -580,6 +614,9 @@ class Retriever:
                     is_table=bool(meta.get("is_table", False)),
                     is_datasheet=bool(meta.get("is_datasheet", False)),
                     index_kind=meta.get("index_kind", "block"),
+                    anchors_used=_deserialize_anchor_list(meta.get("anchors_used")),
+                    anchors_defined=_deserialize_anchor_list(meta.get("anchors_defined")),
+                    refs_outbound=_deserialize_anchor_list(meta.get("refs_outbound")),
                 )
         results = sorted(seen.values(), key=lambda r: r["score"], reverse=True)[:top_k]
         print(f"[Retriever] vector_search top{len(results)} 分数: {[r['score'] for r in results]}")
@@ -630,6 +667,9 @@ class Retriever:
                                 is_table=bool(chunk.get("is_table", False)),
                                 is_datasheet=bool(chunk.get("is_datasheet", False)),
                                 index_kind=chunk.get("index_kind", "block"),
+                                anchors_used=list(chunk.get("anchors_used") or []),
+                                anchors_defined=list(chunk.get("anchors_defined") or []),
+                                refs_outbound=list(chunk.get("refs_outbound") or []),
                             )
                         ]
                         break
@@ -681,6 +721,9 @@ class Retriever:
                 is_table=bool(self._chunks[i].get("is_table", False)),
                 is_datasheet=bool(self._chunks[i].get("is_datasheet", False)),
                 index_kind=self._chunks[i].get("index_kind", "block"),
+                anchors_used=list(self._chunks[i].get("anchors_used") or []),
+                anchors_defined=list(self._chunks[i].get("anchors_defined") or []),
+                refs_outbound=list(self._chunks[i].get("refs_outbound") or []),
             )
             for i in top_indices
             if scores[i] > 0
@@ -813,6 +856,11 @@ def _read_source_lines(retriever, start_line: int, end_line: int) -> str:
 
 
 def _source_evidence(text: str, retriever, query_type: str, section_id: str, source_line: int) -> SearchResult:
+    # 从源文本片段实时提取结构锚（无 chunk 上下文可用）。
+    # 延迟 import 避免与 document_loader 形成顶层循环依赖。
+    from document_loader import _extract_anchors, _extract_refs_outbound
+    anchors_used, anchors_defined = _extract_anchors(text)
+    refs_outbound = _extract_refs_outbound(text)
     return SearchResult(
         text=text,
         source=(retriever.chunks[0].get("source", "") if getattr(retriever, "chunks", None) else "dlpc3436_clean.md"),
@@ -820,6 +868,9 @@ def _source_evidence(text: str, retriever, query_type: str, section_id: str, sou
         is_table="|" in text,
         is_datasheet=True,
         index_kind="block",
+        anchors_used=anchors_used,
+        anchors_defined=anchors_defined,
+        refs_outbound=refs_outbound,
         section_id=section_id,
         source_line=source_line,
     )
@@ -865,6 +916,9 @@ def plan_datasheet_evidence_bundle(query: str, retriever, top_k: int = TOP_K) ->
                     is_table=bool(c.get("is_table", False)),
                     is_datasheet=bool(c.get("is_datasheet", False)),
                     index_kind=c.get("index_kind", "block"),
+                    anchors_used=list(c.get("anchors_used") or []),
+                    anchors_defined=list(c.get("anchors_defined") or []),
+                    refs_outbound=list(c.get("refs_outbound") or []),
                 )
                 for c in getattr(retriever, "chunks", [])
                 if "100-kHz baud rate" in c.get("text", "")
@@ -951,6 +1005,9 @@ def _rrf_merge(
             is_table=bool(text_to_result[key].get("is_table", False)),
             is_datasheet=bool(text_to_result[key].get("is_datasheet", False)),
             index_kind=text_to_result[key].get("index_kind", "block"),
+            anchors_used=list(text_to_result[key].get("anchors_used") or []),
+            anchors_defined=list(text_to_result[key].get("anchors_defined") or []),
+            refs_outbound=list(text_to_result[key].get("refs_outbound") or []),
         )
         for key in sorted_keys
     ]

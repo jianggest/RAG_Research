@@ -31,6 +31,13 @@ class Chunk(TypedDict):
     index_kind: str
     normalized_text: str
     entity_tokens: list[str]
+    # 结构锚字段：用于 V2 检索的"文档结构感知"，替代主题专属硬编码规则。
+    # anchors_used: chunk 文本里出现的脚注引用（如表格单元格内的 "(1)"）
+    # anchors_defined: chunk 内行首定义的脚注（如 "(1) ±200 PPM ..."）
+    # refs_outbound: 跨章节引用（如 "Figure 6-5"、"Section 7.5"）
+    anchors_used: list[str]
+    anchors_defined: list[str]
+    refs_outbound: list[str]
 
 
 # ── PDF 转换 ──────────────────────────────────────────────────────────────────
@@ -64,45 +71,205 @@ def _convert_single_pdf(pdf_path: Path, md_path: Path) -> None:
 
 # ── 表格感知分块（Markdown）────────────────────────────────────────────────────
 
+# 表格脚注锚定行模式：表格紧随其后的此类行应吸附进表格块，避免限制条件
+# （如 "(1) ±200 PPM"、"Note 1: 不支持展频"）与表格主体被切散导致召回不全。
+# 同时支持 docling/MinerU 清洗后常见的"- (1) ..."列表项形式。
+_FOOTNOTE_ANCHOR_PATTERNS: list[re.Pattern[str]] = [
+    re.compile(r"^\(\d+\)\s+"),                          # (1) ...
+    re.compile(r"^\[\d+\]\s+"),                          # [1] ...
+    re.compile(r"^Note\s+\d+[:.]?\s+", re.IGNORECASE),   # Note 1: ... / Note 1. ...
+    re.compile(r"^\*\s+"),                               # * ...
+    re.compile(r"^†\s+"),                                # † ...
+    re.compile(r"^\[\^\d+\]:\s+"),                       # [^1]: ...
+    re.compile(r"^-\s+\(\d+\)\s+"),                      # - (1) ...
+    re.compile(r"^-\s+\[\d+\]\s+"),                      # - [1] ...
+    re.compile(r"^-\s+Note\s+\d+[:.]?\s+", re.IGNORECASE),  # - Note 1 ...
+]
+
+
+def _is_footnote_anchor(line: str) -> bool:
+    """判断一行是否为表格脚注锚定行（(1)/[1]/Note N/* /†/[^N]:）。"""
+    stripped = line.lstrip()
+    return any(pat.match(stripped) for pat in _FOOTNOTE_ANCHOR_PATTERNS)
+
+
+# 列表项前缀：在 ABSORBING 状态下被视为脚注续行（例如公式变量定义的 "- VAR = ..."）。
+# 注意：`* ...` 同时被 _FOOTNOTE_ANCHOR_PATTERNS 命中，行为一致。
+_LIST_BULLET_PATTERN: re.Pattern[str] = re.compile(r"^[-*+]\s+")
+
+
+def _is_list_continuation(line: str) -> bool:
+    """ABSORBING 状态下的"列表续行"判定：行首为 `-` / `*` / `+` 列表标记。"""
+    return bool(_LIST_BULLET_PATTERN.match(line.lstrip()))
+
+
+# ── 结构锚提取（V2 检索用）────────────────────────────────────────────────────
+#
+# anchors_used: chunk 文本里出现的脚注引用（表格单元格内的 (1)、<sup>(2)</sup>、[3]）
+# anchors_defined: chunk 内行首定义的脚注（"(1) ±200 PPM" / "Note 1:" / "[1]" / "- (1)"）
+# refs_outbound: 跨章节引用 "See Figure 6-5" / "Refer to Section 7.5"
+#
+# 所有锚点统一规范化为 "(N)" 格式，便于 V2 在不同写法间配对（used 与 defined 同号匹配）。
+# 跨引用统一规范化为 "Kind Number"（首字母大写），如 "Figure 6-5"、"Section 7.5"。
+
+# 行内 used 锚点：在一行的非定义部分扫描
+_ANCHOR_USED_INLINE_PATTERNS: list[re.Pattern[str]] = [
+    re.compile(r"<sup>\s*\(?(\d+)\)?\s*</sup>"),  # <sup>(1)</sup> / <sup>1</sup>
+    re.compile(r"\((\d+)\)"),                     # (1), (2)
+    re.compile(r"\[(\d+)\]"),                     # [1], [2]
+]
+
+# 行首 defined 锚点：返回匹配对象 + 编号字符串
+_ANCHOR_DEFINED_PATTERNS: list[re.Pattern[str]] = [
+    re.compile(r"^\((\d+)\)\s+"),                          # (1) ...
+    re.compile(r"^\[(\d+)\]\s+"),                          # [1] ...
+    re.compile(r"^Note\s+(\d+)[:.]?\s+", re.IGNORECASE),   # Note 1: ... / Note 1. ...
+    re.compile(r"^\[\^(\d+)\]:\s+"),                       # [^1]: ...
+    re.compile(r"^-\s+\((\d+)\)\s+"),                      # - (1) ...
+    re.compile(r"^-\s+\[(\d+)\]\s+"),                      # - [1] ...
+    re.compile(r"^-\s+Note\s+(\d+)[:.]?\s+", re.IGNORECASE),  # - Note 1 ...
+]
+
+# 跨章节引用：统一捕获 Figure/Table/Section/Chapter + 编号
+_REF_OUTBOUND_PATTERN: re.Pattern[str] = re.compile(
+    r"(?:See|Refer\s+to)\s+(Figure|Table|Section|Chapter)\s+([\w.\-]+?\d[\w.\-]*)",
+    re.IGNORECASE,
+)
+
+
+def _anchor_sort_key(anchor: str) -> tuple[int, str]:
+    """按编号数值排序（解析失败的排在末尾）。"""
+    inner = anchor.strip("()")
+    try:
+        return (int(inner), anchor)
+    except ValueError:
+        return (10**9, anchor)
+
+
+def _extract_anchors(text: str) -> tuple[list[str], list[str]]:
+    """提取 (anchors_used, anchors_defined)，编号规范化为 "(N)"。
+
+    扫描策略：
+      - defined 行（行首匹配 `(1)` / `[1]` / `Note 1:` 等）：编号进 defined。
+        定义之后的部分继续扫 used（脚注内常跨引用其他脚注，如 "(1) 见 (2)"）。
+      - 其他行：只在以下情形扫 used，避免普通文本里的"步骤(1)"等噪声：
+          a) 表格行（行首 `|`）—— 表格单元格里的 (1) / [1] 是脚注引用
+          b) 行内含 `<sup>` 标签 —— 明确的脚注上标语义
+    """
+    used: set[str] = set()
+    defined: set[str] = set()
+
+    for line in text.splitlines():
+        stripped = line.lstrip()
+        matched_end = 0
+        for pat in _ANCHOR_DEFINED_PATTERNS:
+            m = pat.match(stripped)
+            if m:
+                defined.add(f"({m.group(1)})")
+                matched_end = m.end()
+                break
+
+        # 是否应扫该行 used：表格行 / <sup> 标签行 / defined 行剩余部分
+        is_defined_line = matched_end > 0
+        is_table_line = stripped.startswith("|")
+        has_sup_tag = "<sup>" in stripped.lower()
+        if not (is_defined_line or is_table_line or has_sup_tag):
+            continue
+
+        scan = stripped[matched_end:] if matched_end else stripped
+        for pat in _ANCHOR_USED_INLINE_PATTERNS:
+            for m in pat.finditer(scan):
+                used.add(f"({m.group(1)})")
+
+    return sorted(used, key=_anchor_sort_key), sorted(defined, key=_anchor_sort_key)
+
+
+def _extract_refs_outbound(text: str) -> list[str]:
+    """提取跨章节引用，规范化为 "Kind Number" 形式。"""
+    refs: set[str] = set()
+    for m in _REF_OUTBOUND_PATTERN.finditer(text):
+        kind = m.group(1).capitalize()
+        number = m.group(2).rstrip(".,;:")
+        refs.add(f"{kind} {number}")
+    return sorted(refs)
+
+
 def _extract_blocks(content: str) -> list[str]:
     """
     将 Markdown 文本拆成语义块（表格块 / 文本块）。
 
-    核心规则：表格内的空行不作为分块边界，保证表格连续性。
+    采用三态状态机：
+      TEXT       — 普通文本流；空行作为块分隔符。
+      TABLE_BODY — 表格主体（| 行流）。空行跳过；
+                   anchor 行 → 转 ABSORBING；其他非 | 非空行 → 关表回到 TEXT。
+      ABSORBING  — 表格脚注吸附段（已吸附 ≥1 行 anchor）。空行跳过；
+                   anchor 行 或 列表续行（`- ...` / `* ...` / `+ ...`）→ 继续吸附；
+                   新 | 行 → 关旧块、以本行为新表格起点；
+                   其他普通行 → 关旧块、回到 TEXT。
+
+    设计取舍：
+      - ABSORBING 下任何列表项视为续行（覆盖 datasheet 中"公式变量逐行定义"等真实形态）。
+      - 不拆分"| 行 + 空行 + | 行"形式的相邻表格，保留原有合并行为
+        （该问题与脚注吸附正交，留给后续任务处理）。
     """
+    TEXT, TABLE_BODY, ABSORBING = "text", "table_body", "absorbing"
+
     blocks: list[str] = []
     current_lines: list[str] = []
-    in_table = False
+    state = TEXT
+
+    def flush() -> None:
+        if current_lines:
+            blocks.append("\n".join(current_lines))
+            current_lines.clear()
 
     for line in content.split("\n"):
-        is_table_line = line.strip().startswith("|")
+        stripped = line.strip()
+        is_table_line = stripped.startswith("|")
+        is_blank = not stripped
 
-        if is_table_line:
-            # 从文本切换到表格：先保存当前文本块
-            if not in_table and current_lines:
-                blocks.append("\n".join(current_lines))
-                current_lines = []
-            in_table = True
-            current_lines.append(line)
-        else:
-            if in_table:
-                # 表格内空行：跳过，不中断表格
-                if not line.strip():
-                    continue
-                # 非空非表格行：表格结束，保存表格块
-                blocks.append("\n".join(current_lines))
-                current_lines = []
-                in_table = False
-            # 普通文本：空行作为块分隔符
-            if not line.strip() and current_lines:
-                blocks.append("\n".join(current_lines))
-                current_lines = []
-            elif line.strip():
+        if state == TABLE_BODY:
+            if is_table_line:
+                current_lines.append(line)
+            elif is_blank:
+                # 表格内空行：跳过，等待后续 | 行或脚注
+                continue
+            elif _is_footnote_anchor(line):
+                current_lines.append(line)
+                state = ABSORBING
+            else:
+                # 普通文本 / 标题 / 图片说明 → 表格结束
+                flush()
+                current_lines.append(line)
+                state = TEXT
+        elif state == ABSORBING:
+            if is_table_line:
+                # 脚注吸附完毕又遇到新表格 → 关旧块，以本行为新表格起点
+                flush()
+                current_lines.append(line)
+                state = TABLE_BODY
+            elif is_blank:
+                continue
+            elif _is_footnote_anchor(line) or _is_list_continuation(line):
+                # anchor 行或列表续行：继续吸附（state 保持 ABSORBING）
+                current_lines.append(line)
+            else:
+                # 普通文本段 / 图片说明 → 关旧块，回到 TEXT 累积
+                flush()
+                current_lines.append(line)
+                state = TEXT
+        else:  # TEXT
+            if is_table_line:
+                flush()
+                current_lines.append(line)
+                state = TABLE_BODY
+            elif is_blank:
+                if current_lines:
+                    flush()
+            else:
                 current_lines.append(line)
 
-    if current_lines:
-        blocks.append("\n".join(current_lines))
-
+    flush()
     return [b.strip() for b in blocks if b.strip()]
 
 
@@ -125,6 +292,8 @@ def _build_chunk(text: str, source: str, index: int) -> Chunk:
     stripped = text.strip()
     is_datasheet = source in DATASHEET_SOURCES
     normalized_text = normalize_datasheet_text(stripped) if is_datasheet else re.sub(r"\s+", " ", stripped)
+    anchors_used, anchors_defined = _extract_anchors(stripped)
+    refs_outbound = _extract_refs_outbound(stripped)
     return Chunk(
         source=source,
         chunk_index=index,
@@ -136,6 +305,9 @@ def _build_chunk(text: str, source: str, index: int) -> Chunk:
         index_kind="block",
         normalized_text=normalized_text,
         entity_tokens=extract_datasheet_entity_tokens(stripped) if is_datasheet else [],
+        anchors_used=anchors_used,
+        anchors_defined=anchors_defined,
+        refs_outbound=refs_outbound,
     )
 
 
