@@ -139,7 +139,7 @@ def _is_technical_datasheet_answer(executed_steps: list, query_structure: Option
     """根据 domain 或执行 Skill 判断是否使用技术 datasheet 回答 prompt。"""
     if query_structure and query_structure.get("domain") == "technical_datasheet":
         return True
-    return any(step.get("skill") == "search_datasheet" for step in executed_steps)
+    return any(step.get("skill") == "search_datasheet_v2" for step in executed_steps)
 
 
 def _build_style_instruction(query_structure: Optional[dict]) -> str:
