@@ -49,8 +49,27 @@ def _deserialize_anchor_list(value: str | None) -> list[str]:
     return [item for item in value.split("|") if item]
 
 
+# ASCII 单词边界：Python3 默认 \b 用 Unicode \w，中文混排时
+# "DLPC3436支" 之间两侧都是 \w，\b 不成立，导致整段 token 抽不出。
+# 这里把"单词字符"收紧为 ASCII [A-Za-z0-9_]，使中文/全角符号等被视为分隔符。
+_ASCII_WORD_BOUNDARY = (
+    r"(?:(?<=[A-Za-z0-9_])(?![A-Za-z0-9_])|(?<![A-Za-z0-9_])(?=[A-Za-z0-9_]))"
+)
+
+
+def ascii_boundary_pattern(pattern: str) -> str:
+    """把 pattern 里的 ``\\b`` 替换成 ASCII 单词边界。
+
+    供 datasheet 检索路径上的实体/别名正则统一使用，让 "DLPC3436支持的I2C"
+    这类中文混排 query 也能正常抽取 token。
+    """
+    return pattern.replace(r"\b", _ASCII_WORD_BOUNDARY)
+
+
 _ENTITY_TOKEN_RE = re.compile(
-    r"\b(?:TSTPT_?\d+|IIC\d_[A-Z]+|GPIO_\d+|GPIO\d+|PLL_REFCLK_[IO]|PLL\s+REFCLK\s+[IO]|VCC_[A-Z0-9]+|HOST_IRQ|SPI\d_[A-Z0-9]+|[A-Z]{2,}\d*[A-Z0-9_]*)\b"
+    ascii_boundary_pattern(
+        r"\b(?:TSTPT_?\d+|IIC\d_[A-Z]+|GPIO_\d+|GPIO\d+|PLL_REFCLK_[IO]|PLL\s+REFCLK\s+[IO]|VCC_[A-Z0-9]+|HOST_IRQ|SPI\d_[A-Z0-9]+|[A-Z]{2,}\d*[A-Z0-9_]*)\b"
+    )
 )
 
 
@@ -701,30 +720,52 @@ class Retriever:
             entries = generate_augmented_entries(self._chunks)
             if entries:
                 total = len(entries)
-                batch_size = max(1, int(INDEX_BATCH_SIZE))
-                for start in range(0, total, batch_size):
-                    batch = entries[start:start + batch_size]
-                    end = start + len(batch)
-                    print(f"[Retriever] 增强问题索引进度：{end}/{total}", flush=True)
-                    self._collection.add(
-                        documents=[e["document"] for e in batch],
-                        ids=[f"aug_{e['chunk_hash']}_{i}" for i, e in enumerate(batch, start=start)],
-                        metadatas=[{
-                            "source":        e["source"],
-                            "chunk_index":   e["chunk_index"],
-                            "is_table":      e["is_table"],
-                            "is_datasheet":  bool(e.get("is_datasheet", False)),
-                            "index_kind":    e.get("index_kind", "block"),
-                            "is_augmented":  True,
-                            "original_text": e["original_text"],
-                            # 与主索引保持 metadata schema 一致；增强条目透传原 chunk 的锚字段，
-                            # 缺失则置空字符串（"|" 分隔序列化）。
-                            "anchors_used":    _serialize_anchor_list(e.get("anchors_used")),
-                            "anchors_defined": _serialize_anchor_list(e.get("anchors_defined")),
-                            "refs_outbound":   _serialize_anchor_list(e.get("refs_outbound")),
-                        } for e in batch],
-                    )
-                print(f"[Retriever] 增强问题索引：{len(entries)} 条", flush=True)
+                # ID 由 chunk_hash + 该 chunk 内的 question_index 组合而成，跨启动稳定。
+                # 持久化模式下据此跳过已存在条目，避免对相同问题重复 embedding。
+                # 同一批 entries 内也可能出现相同 ID：当两个 chunk 文本完全一致
+                # 时它们共享 chunk_hash，augmenter 会为每个 chunk 都 append 一组
+                # 条目；此处用 seen 集合在本批内再做一次去重，避免 Chroma 报
+                # DuplicateIDError。
+                all_aug_ids = [f"aug_{e['chunk_hash']}_{e['question_index']}" for e in entries]
+                existing_aug_ids = self._existing_ids(self._collection, all_aug_ids) if PERSIST_CHROMA_INDEX else set()
+                seen_aug_ids: set[str] = set()
+                pending: list[tuple[str, dict]] = []
+                for eid, e in zip(all_aug_ids, entries):
+                    if eid in existing_aug_ids or eid in seen_aug_ids:
+                        continue
+                    seen_aug_ids.add(eid)
+                    pending.append((eid, e))
+                skipped = total - len(pending)
+                if skipped:
+                    print(f"[Retriever] 增强问题索引跳过已存在：{skipped}/{total}", flush=True)
+                if not pending:
+                    print(f"[Retriever] 增强问题索引无新增，共 {total} 条", flush=True)
+                else:
+                    pending_total = len(pending)
+                    batch_size = max(1, int(INDEX_BATCH_SIZE))
+                    for start in range(0, pending_total, batch_size):
+                        batch = pending[start:start + batch_size]
+                        end = start + len(batch)
+                        print(f"[Retriever] 增强问题索引进度：{end}/{pending_total}（总 {total}）", flush=True)
+                        self._collection.add(
+                            documents=[e["document"] for _, e in batch],
+                            ids=[eid for eid, _ in batch],
+                            metadatas=[{
+                                "source":        e["source"],
+                                "chunk_index":   e["chunk_index"],
+                                "is_table":      e["is_table"],
+                                "is_datasheet":  bool(e.get("is_datasheet", False)),
+                                "index_kind":    e.get("index_kind", "block"),
+                                "is_augmented":  True,
+                                "original_text": e["original_text"],
+                                # 与主索引保持 metadata schema 一致；增强条目透传原 chunk 的锚字段，
+                                # 缺失则置空字符串（"|" 分隔序列化）。
+                                "anchors_used":    _serialize_anchor_list(e.get("anchors_used")),
+                                "anchors_defined": _serialize_anchor_list(e.get("anchors_defined")),
+                                "refs_outbound":   _serialize_anchor_list(e.get("refs_outbound")),
+                            } for _, e in batch],
+                        )
+                    print(f"[Retriever] 增强问题索引：新增 {pending_total} 条；总 {total} 条", flush=True)
 
     def _vector_search_collection(
         self,

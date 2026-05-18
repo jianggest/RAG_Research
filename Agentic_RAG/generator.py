@@ -5,6 +5,7 @@ Generator 模块
 对外接口：generate(question, executed_steps, query_structure=None) -> str
 """
 
+import re
 from typing import Optional
 
 from llm import call_llm
@@ -106,6 +107,9 @@ def generate(question: str, executed_steps: list, query_structure: Optional[dict
         answer = call_llm(prompt)
         print(f"[Generator] LLM 返回，回答长度：{len(answer)} 字符")
         answer = answer or "（LLM 未返回回答，请检查 Ollama 是否已启动）"
+        alias_warning = _build_device_alias_warning(executed_steps)
+        if alias_warning:
+            answer = answer + "\n\n" + alias_warning
         return _append_structured_references(answer, executed_steps)
 
     style_instruction = _build_style_instruction(query_structure)
@@ -131,6 +135,10 @@ def generate(question: str, executed_steps: list, query_structure: Optional[dict
     conflict_warning = _build_conflict_warning(query_structure)
     if conflict_warning:
         answer = answer + "\n\n" + conflict_warning
+
+    alias_warning = _build_device_alias_warning(executed_steps)
+    if alias_warning:
+        answer = answer + "\n\n" + alias_warning
 
     return answer
 
@@ -166,6 +174,44 @@ def _build_assumption_note(query_structure: Optional[dict]) -> str:
     if not inferred:
         return ""
     return f"7. 以下维度为系统推断默认值，请在回答开头注明：{', '.join(inferred)}\n"
+
+
+_SOURCE_DEVICE_RE = re.compile(r"^([A-Za-z]+\d+)")
+
+
+def _build_device_alias_warning(executed_steps: list) -> str:
+    """模糊命中提示: 用户写的型号未在知识库直接命中, 通过字母前缀容错匹配到具体子族文档。
+
+    扫描所有结果上的 `_device_alias_map`（由 search_datasheet_v2 写入）, 汇总为单行提示:
+    「ℹ️ 未在知识库中直接命中 DLP6540，已用 DLPC6540 相关资料作答」
+
+    多个 token / 子族会合并显示。无 alias 时返回空串。
+    """
+    aliases: dict[str, set[str]] = {}
+    for step in executed_steps:
+        seen_step = False
+        for result in step.get("results", []):
+            alias_map = result.get("_device_alias_map")
+            if not alias_map:
+                continue
+            for token, sources in alias_map.items():
+                aliases.setdefault(token, set()).update(sources)
+            seen_step = True
+            break  # 同一步骤的 alias_map 一致, 取首条即可
+        if seen_step:
+            continue
+    if not aliases:
+        return ""
+
+    parts: list[str] = []
+    for token in sorted(aliases):
+        canonical: set[str] = set()
+        for src in aliases[token]:
+            m = _SOURCE_DEVICE_RE.match(src)
+            canonical.add(m.group(1).upper() if m else src)
+        matched = " / ".join(sorted(canonical))
+        parts.append(f"未在知识库中直接命中 {token}，已用 {matched} 相关资料作答")
+    return "ℹ️ " + "；".join(parts)
 
 
 def _build_conflict_warning(query_structure: Optional[dict]) -> str:

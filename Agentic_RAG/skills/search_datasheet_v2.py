@@ -29,7 +29,11 @@ from __future__ import annotations
 import re
 import time
 
-from retriever import extract_datasheet_entity_tokens, normalize_datasheet_text
+from retriever import (
+    ascii_boundary_pattern,
+    extract_datasheet_entity_tokens,
+    normalize_datasheet_text,
+)
 
 
 SKILL_META = {
@@ -96,6 +100,8 @@ MIN_PER_FACET = 2           # round-robin 保底: 每切面至少保留 N 条（
 #   - 英文别名加 `\b` 边界, 避免 "esdfasdf" 误判为 ESD、"asparking" 误判为 parking
 #   - 中文别名不加边界（中文无单词边界, substring 即可）
 #   - "SPI flash" 等多词别名排在 "SPI" 前面, 优先匹配更具体形式
+#   - 编译时 `\b` 会被 `ascii_boundary_pattern` 替换成 ASCII 边界, 让中文混排
+#     query (如 "DLPC3436的I2C接口") 也能命中
 
 _TOPIC_ALIAS_PATTERNS: list[tuple[list[str], str]] = [
     ([r"\bi\s*2\s*c\b", r"\biic\b", r"i²c"], "I2C"),
@@ -116,7 +122,7 @@ _TOPIC_ALIAS_PATTERNS: list[tuple[list[str], str]] = [
 ]
 
 _TOPIC_ALIASES: list[tuple[list[re.Pattern[str]], str]] = [
-    ([re.compile(p, re.IGNORECASE) for p in patterns], normalized)
+    ([re.compile(ascii_boundary_pattern(p), re.IGNORECASE) for p in patterns], normalized)
     for patterns, normalized in _TOPIC_ALIAS_PATTERNS
 ]
 
@@ -155,15 +161,36 @@ def execute(query: str, retriever, query_structure: dict = None) -> list[dict]:
     search_query = _extract_search_query(query, query_structure)
     topic = _detect_topic(search_query)
     device_tokens = _detect_device_tokens(search_query)
-    device_prefix = " ".join(device_tokens)
     topic_or_query = topic if topic else search_query
-    print(
-        f"[search_datasheet_v2] query={search_query!r} "
-        f"topic={topic!r} devices={device_tokens}"
-    )
 
     chunks = getattr(retriever, "chunks", [])
-    target_sources, device_aliases = _discover_relevant_datasheet_sources(chunks, device_tokens)
+    target_sources, device_aliases, canonical_map = _discover_relevant_datasheet_sources(
+        chunks, device_tokens
+    )
+
+    # 用从 source 反推的规范型号拼 facet query, 让 'DLP3436...' 与 'DLPC3436...'
+    # 命中同一 source 时, 进入向量/BM25 的字面 query 真正一致 (规范化为 'DLPC3436')。
+    # 未命中任何 source 的 token 退化为原写法, 不影响 fallback 全库检索路径。
+    canonical_devices = [canonical_map.get(t.upper(), t) for t in device_tokens]
+    device_prefix = " ".join(canonical_devices)
+
+    print(
+        f"[search_datasheet_v2] query={search_query!r} "
+        f"topic={topic!r} devices={device_tokens} canonical={canonical_devices}"
+    )
+
+    # 用户明确指了型号但库里查无此料: 直接早退, 避免退化到全库检索把 DLPC3420
+    # 等历史 datasheet 当兜底带进来形成串台。区分两种 "target_sources 空":
+    #   - device_tokens 非空: 用户明确指了型号 → 早退
+    #   - device_tokens 为空: 用户没指型号且库里没 datasheet → 退化全库检索, 让外层
+    #     skill router 还有挽救机会
+    if device_tokens and not target_sources:
+        print(
+            f"[search_datasheet_v2] ⚠️ 知识库未找到型号 {device_tokens} 的 datasheet 资料, "
+            f"直接返回空, 不退化为全库检索以避免串到其他型号"
+        )
+        return []
+
     if not target_sources:
         print("[search_datasheet_v2] ⚠️ 未识别到任何 datasheet 来源, 退化为全库检索")
     elif device_tokens:
@@ -290,61 +317,88 @@ def _discover_datasheet_sources(chunks: list[dict]) -> set[str]:
 _LETTER_PREFIX_NUM_RE = re.compile(r"^([a-z]+)(\d.*)$")
 
 
-def _device_token_matches_source(token: str, source_lower: str) -> bool:
-    """device_token 与 source 文件名匹配, 字母前缀通用容错。
+def _canonical_device_from_source(token: str, source_lower: str) -> str | None:
+    """device_token 与 source 文件名匹配; 命中则返回 source 中对应字串的大写规范型号。
 
     匹配规则:
-      - 直接 substring 命中即为匹配
+      - 直接 substring 命中: 返回 token 本身的大写形式
       - 若 token 形如「字母前缀 + 数字尾」(如 'DLP6540'、'TPS5430'), 允许 source 在
         字母前缀与数字之间插入 1+ 字母（'DLP6540' 命中 'dlpc6540' / 'dlpa6540';
-        'TPS5430' 命中 'tpsm5430'）, 应对用户口语化型号。
+        'TPS5430' 命中 'tpsm5430'）, 应对用户口语化型号; 返回 source 里实际命中
+        的字串（如 'DLPC6540'）大写形式作为规范型号, 供 facet query 用规范名而非
+        用户原写法, 让 'DLP3436...' 与 'DLPC3436...' 进入检索器的字面 query 一致。
       - 已写明更长前缀的 token（如 'DLPC6540' / 'DLPA6540'）仅走 substring, 不再扩展,
         避免 DLPC ↔ DLPA 等同根不同子族被误串台。
     """
     t = token.lower()
     if t in source_lower:
-        return True
+        return token.upper()
     m = _LETTER_PREFIX_NUM_RE.match(t)
     if not m:
-        return False
+        return None
     prefix, rest = m.group(1), m.group(2)
-    return re.search(rf"{prefix}[a-z]+{re.escape(rest)}", source_lower) is not None
+    hit = re.search(rf"{prefix}[a-z]+{re.escape(rest)}", source_lower)
+    return hit.group(0).upper() if hit else None
+
+
+def _device_token_matches_source(token: str, source_lower: str) -> bool:
+    """语义保留接口: 是否命中。具体规则见 [[_canonical_device_from_source]]。"""
+    return _canonical_device_from_source(token, source_lower) is not None
 
 
 def _discover_relevant_datasheet_sources(
     chunks: list[dict],
     device_tokens: list[str],
-) -> tuple[set[str], dict[str, list[str]]]:
+) -> tuple[set[str], dict[str, list[str]], dict[str, str]]:
     """按 device_tokens 收窄 datasheet 来源; 没设备 / 没命中时退回全部 datasheet。
 
     返回:
-      (sources, aliases)
-      sources: 收窄后的 source 文件名集合
-      aliases: {user_token: [matched_source, ...]}, 仅含「模糊命中」的条目, 即用户写的
-               token 未在 source 中直接 substring 命中, 而是经字母前缀容错命中。供生成
-               器在回答里向用户说明（如「未直接命中 DLP6540, 已用 DLPC6540 资料作答」）。
+      (sources, aliases, canonical_map)
+      sources:       收窄后的 source 文件名集合
+      aliases:       {user_token: [matched_source, ...]}, 仅含「模糊命中」的条目, 即
+                     用户写的 token 未在 source 中直接 substring 命中, 而是经字母前
+                     缀容错命中。供生成器在回答里向用户说明（如「未直接命中 DLP6540,
+                     已用 DLPC6540 资料作答」）。
+      canonical_map: {USER_TOKEN_UPPER: CANONICAL_TOKEN_UPPER}, 用户写法 → source 反推
+                     的规范型号。精确命中时 value 等于 key（自映射）; 模糊命中时把
+                     用户写的 'DLP3436' 映射到 source 实际带的 'DLPC3436'。execute()
+                     用它替换 device_prefix, 让两种写法进入检索器的字面 query 一致。
+
+    回退规则（严格化, 避免串台）:
+      - device_tokens 为空（用户没指定型号）→ 退回全部 datasheet（广泛检索合理）
+      - device_tokens 非空 + 库里无 datasheet → 返回空（无可用资料）
+      - device_tokens 非空 + 库里有 datasheet 但均未命中 → 返回空（用户明确指了
+        型号但库里查无此料, 不应擅自把 DLPC3420/3437 等无关型号当兜底带进来）
+        execute() 据此早退并提示"未找到该型号资料"。
 
     例:
-      device_tokens=["DLPC3436"] → sources={"dlpc3436_clean.md"}, aliases={}
-      device_tokens=["DLP6540"]  → sources={"dlpc6540_..."}, aliases={"DLP6540": ["dlpc6540_..."]}
+      device_tokens=["DLPC3436"] → sources={"dlpc3436_clean.md"}, aliases={},
+                                   canonical_map={"DLPC3436": "DLPC3436"}
+      device_tokens=["DLP6540"]  → sources={"dlpc6540_..."},
+                                   aliases={"DLP6540": ["dlpc6540_..."]},
+                                   canonical_map={"DLP6540": "DLPC6540"}
+      device_tokens=["DLPC9999"] (库里没该型号) → sources=set(), aliases={}, canonical_map={}
     """
     all_ds = _discover_datasheet_sources(chunks)
-    if not device_tokens or not all_ds:
-        return all_ds, {}
+    if not device_tokens:
+        return all_ds, {}, {}
+    if not all_ds:
+        return set(), {}, {}
     narrowed: set[str] = set()
     aliases: dict[str, list[str]] = {}
+    canonical_map: dict[str, str] = {}
     for src in all_ds:
         src_lower = src.lower()
         for token in device_tokens:
-            if not _device_token_matches_source(token, src_lower):
+            canonical = _canonical_device_from_source(token, src_lower)
+            if canonical is None:
                 continue
             narrowed.add(src)
+            canonical_map.setdefault(token.upper(), canonical)
             if token.lower() not in src_lower:
                 aliases.setdefault(token, []).append(src)
             break  # 该 source 已被某个 token 命中, 不必再试其他 token
-    if not narrowed:
-        return all_ds, {}
-    return narrowed, aliases
+    return narrowed, aliases, canonical_map
 
 
 # ── 切面检索 ─────────────────────────────────────────────────────────────────

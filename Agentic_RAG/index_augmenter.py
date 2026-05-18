@@ -119,6 +119,8 @@ def generate_augmented_entries(chunks: list[dict]) -> list[dict]:
     cache = load_cache()
     cache_updated = False
     augmented: list[dict] = []
+    seen_hashes: set[str] = set()
+    duplicate_chunks = 0
 
     for chunk in chunks:
         text = chunk["text"]
@@ -130,6 +132,20 @@ def generate_augmented_entries(chunks: list[dict]) -> list[dict]:
 
         key = _chunk_hash(text)
 
+        # 同一 chunk_hash（即文本完全相同的 chunk）只需要一组 entries：
+        # 增强索引 ID 由 chunk_hash + question_index 组成，重复 append
+        # 会产生相同 ID，下游 Chroma add 会抛 DuplicateIDError。
+        # chunks 里出现重复文本通常是上游切块/加载阶段的数据问题，这里同时打印告警。
+        if key in seen_hashes:
+            duplicate_chunks += 1
+            print(
+                f"[Augmenter] ⚠️ 跳过重复 chunk：{chunk['source']} chunk_{chunk['chunk_index']} "
+                f"与已处理 chunk 文本完全相同（hash={key[:8]}）",
+                flush=True,
+            )
+            continue
+        seen_hashes.add(key)
+
         if key in cache:
             questions = cache[key]
         else:
@@ -138,7 +154,7 @@ def generate_augmented_entries(chunks: list[dict]) -> list[dict]:
             cache[key] = questions  # 即使为空也缓存，避免重复调用失败的 chunk
             cache_updated = True
 
-        for q in questions:
+        for q_idx, q in enumerate(questions):
             augmented.append({
                 "document":      q,
                 "source":        chunk["source"],
@@ -148,7 +164,17 @@ def generate_augmented_entries(chunks: list[dict]) -> list[dict]:
                 "index_kind":    chunk.get("index_kind", "block"),
                 "original_text": text,
                 "chunk_hash":    key,
+                # 该 chunk 内 question 的局部序号；与 chunk_hash 组合后形成稳定 ID，
+                # 重启时增强索引可按 ID 跳过已存在条目，避免重复 embedding。
+                "question_index": q_idx,
             })
+
+    if duplicate_chunks:
+        print(
+            f"[Augmenter] ⚠️ 共检测到 {duplicate_chunks} 个重复文本 chunk，"
+            f"建议排查上游切块/加载逻辑是否产出了重复内容。",
+            flush=True,
+        )
 
     if cache_updated:
         save_cache(cache)
