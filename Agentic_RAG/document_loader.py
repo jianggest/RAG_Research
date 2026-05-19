@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import TypedDict
 
 from config import CHUNK_SIZE, DATASHEET_SOURCES
+from document_catalog import write_document_catalog
 from retriever import extract_datasheet_entity_tokens, normalize_datasheet_text
 
 
@@ -408,6 +409,7 @@ def load_documents(kb_dir: Path) -> list[Chunk]:
     clean_documents(kb_dir)
 
     all_chunks: list[Chunk] = []
+    loaded_documents: list[dict] = []
 
     for md_file in sorted(kb_dir.glob("*.md")):
         if md_file.stem.endswith("_clean"):
@@ -425,15 +427,18 @@ def load_documents(kb_dir: Path) -> list[Chunk]:
 
         label = target.name
         content = target.read_text(encoding="utf-8")
+        loaded_documents.append({"source": label, "content": content})
         file_chunks = chunk_markdown(content, label)
         all_chunks.extend(file_chunks)
         print(f"[Loader] {label} → {len(file_chunks)} chunks")
 
     for txt_file in sorted(kb_dir.glob("*.txt")):
         content = txt_file.read_text(encoding="utf-8")
+        loaded_documents.append({"source": txt_file.name, "content": content})
         file_chunks = chunk_text(content, txt_file.name)
         all_chunks.extend(file_chunks)
         print(f"[Loader] {txt_file.name} → {len(file_chunks)} chunks")
 
+    write_document_catalog(kb_dir, loaded_documents)
     print(f"[Loader] 共加载 {len(all_chunks)} 个 chunks")
     return all_chunks

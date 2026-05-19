@@ -9,8 +9,8 @@ Skill：search_datasheet_v2 — 多切面（faceted）检索 V2
 设计原则:
   - 6 个通用切面 (physical_scope / functional_role / parameters_and_ratings /
     performance_timing / system_conditions / configuration_control)
-  - facet query = device_token(s) + (topic 或 原始 query) + 切面 keywords
-    设备型号必须保留, 避免多 datasheet 入库后跨型号串台
+  - facet query = semantic topic/query + 切面 keywords
+    文档/设备实体优先走 source filter, 避免把限定条件混进语义检索词
   - 切面 keywords 不绑接口/主题, 只装「工程通用属性词」
   - 不写主题专属 overlay, 不写关键词正则补强, 不写 staged rules
   - 切面权重初版全 1（round-robin 一轮一条）
@@ -29,6 +29,8 @@ from __future__ import annotations
 import re
 import time
 
+from config import get_knowledge_base_dir
+from document_catalog import decompose_query_with_catalog
 from retriever import (
     ascii_boundary_pattern,
     extract_datasheet_entity_tokens,
@@ -42,7 +44,7 @@ SKILL_META = {
         "该Skill处理 datasheet / 芯片手册的【多切面】查询, 面向【枚举/总览/设计要求】型问题, "
         "如 'I2C 接口或信号有哪些'、'Oscillator Timing 要求'、'ESD 设计要求'。"
         "采用工程视角的 6 个通用切面（物理形态/功能定位/参数等级/性能时序/系统条件/配置控制）, "
-        "切面 keywords 与设备型号 + 主题词拼接成 facet query, 无需为每个接口/主题写专属规则。"
+        "切面 keywords 与主题词拼接成 facet query, 文档实体优先作为 source filter 使用。"
         "不处理企业 HR、财务报销、行政、IT 账号登录等内部制度问题。"
     ),
     "retrieval_method": "hybrid",
@@ -158,25 +160,50 @@ _DATASHEET_SOURCE_HINTS = (
 # ── 入口 ──────────────────────────────────────────────────────────────────────
 
 def execute(query: str, retriever, query_structure: dict = None) -> list[dict]:
-    search_query = _extract_search_query(query, query_structure)
-    topic = _detect_topic(search_query)
-    device_tokens = _detect_device_tokens(search_query)
-    topic_or_query = topic if topic else search_query
+    original_search_query = query
+    decomposition = decompose_query_with_catalog(original_search_query, kb_dir=get_knowledge_base_dir())
+    scoped_sources = {
+        scope["source"]
+        for scope in decomposition.get("document_scopes", [])
+        if scope.get("source")
+    }
+    device_tokens = _detect_device_tokens(original_search_query)
 
     chunks = getattr(retriever, "chunks", [])
-    target_sources, device_aliases, canonical_map = _discover_relevant_datasheet_sources(
-        chunks, device_tokens
-    )
-
-    # 用从 source 反推的规范型号拼 facet query, 让 'DLP3436...' 与 'DLPC3436...'
-    # 命中同一 source 时, 进入向量/BM25 的字面 query 真正一致 (规范化为 'DLPC3436')。
-    # 未命中任何 source 的 token 退化为原写法, 不影响 fallback 全库检索路径。
-    canonical_devices = [canonical_map.get(t.upper(), t) for t in device_tokens]
-    device_prefix = " ".join(canonical_devices)
+    device_aliases: dict[str, list[str]] = {}
+    if scoped_sources:
+        loaded_sources = {chunk.get("source", "") for chunk in chunks or []}
+        missing_sources = sorted(src for src in scoped_sources if src not in loaded_sources)
+        if missing_sources:
+            print(
+                "[search_datasheet_v2] ⚠️ catalog 命中文档但当前索引未加载 source: "
+                f"{missing_sources}; 直接返回空，避免静默串到其他文档"
+            )
+            return []
+        target_sources = scoped_sources
+        canonical_devices: list[str] = []
+        search_query = decomposition.get("semantic_query") or original_search_query
+    else:
+        original_search_query = _extract_search_query(query, query_structure)
+        target_sources, device_aliases, canonical_map = _discover_relevant_datasheet_sources(
+            chunks, device_tokens
+        )
+        # 兼容旧路径：catalog 没命中文档实体时，保留已有 device-token source 收窄能力，
+        # 但同样把设备 token 从语义 query 中拿掉，只作为 source filter 使用。
+        canonical_devices = [canonical_map.get(t.upper(), t) for t in device_tokens]
+        search_query = (
+            _strip_query_terms(original_search_query, device_tokens)
+            if target_sources and device_tokens
+            else original_search_query
+        )
+    device_prefix = ""
+    topic = _detect_topic(search_query)
+    topic_or_query = _topic_query(topic, search_query)
 
     print(
         f"[search_datasheet_v2] query={search_query!r} "
-        f"topic={topic!r} devices={device_tokens} canonical={canonical_devices}"
+        f"topic={topic!r} scopes={sorted(scoped_sources)} "
+        f"devices={device_tokens} canonical={canonical_devices}"
     )
 
     # 用户明确指了型号但库里查无此料: 直接早退, 避免退化到全库检索把 DLPC3420
@@ -184,7 +211,7 @@ def execute(query: str, retriever, query_structure: dict = None) -> list[dict]:
     #   - device_tokens 非空: 用户明确指了型号 → 早退
     #   - device_tokens 为空: 用户没指型号且库里没 datasheet → 退化全库检索, 让外层
     #     skill router 还有挽救机会
-    if device_tokens and not target_sources:
+    if not scoped_sources and device_tokens and not target_sources:
         print(
             f"[search_datasheet_v2] ⚠️ 知识库未找到型号 {device_tokens} 的 datasheet 资料, "
             f"直接返回空, 不退化为全库检索以避免串到其他型号"
@@ -362,7 +389,7 @@ def _discover_relevant_datasheet_sources(
       canonical_map: {USER_TOKEN_UPPER: CANONICAL_TOKEN_UPPER}, 用户写法 → source 反推
                      的规范型号。精确命中时 value 等于 key（自映射）; 模糊命中时把
                      用户写的 'DLP3436' 映射到 source 实际带的 'DLPC3436'。execute()
-                     用它替换 device_prefix, 让两种写法进入检索器的字面 query 一致。
+                     当前仅用于日志/兼容旧路径诊断；语义 query 不再拼回设备名。
 
     回退规则（严格化, 避免串台）:
       - device_tokens 为空（用户没指定型号）→ 退回全部 datasheet（广泛检索合理）
@@ -441,6 +468,38 @@ def _build_facet_query(facet_keywords: str, device_prefix: str, topic_or_query: 
     if facet_keywords and facet_keywords.strip():
         parts.append(facet_keywords.strip())
     return " ".join(" ".join(parts).split())
+
+
+def _topic_query(topic: str | None, semantic_query: str) -> str:
+    """Add normalized topic only when the semantic query does not already contain it.
+
+    The retriever also normalizes query text, so duplicate normalized terms add noise
+    without improving recall.
+    """
+    semantic_query = " ".join((semantic_query or "").split()).strip()
+    if not topic:
+        return semantic_query
+    normalized_semantic = normalize_datasheet_text(semantic_query).casefold()
+    normalized_topic = normalize_datasheet_text(topic).casefold()
+    if normalized_topic and normalized_topic in normalized_semantic:
+        return semantic_query
+    return f"{topic} {semantic_query}".strip()
+
+
+def _strip_query_terms(query: str, terms: list[str]) -> str:
+    """Remove already-routed document/entity terms from semantic query text."""
+    remaining = query
+    for term in sorted(set(terms), key=len, reverse=True):
+        if not term:
+            continue
+        remaining = remaining.replace(term, " ")
+    remaining = " ".join(remaining.split()).strip()
+    for marker in ("的", "在", "于", "：", ":", "-", "—"):
+        while remaining.startswith(marker):
+            remaining = remaining[len(marker):].strip()
+        while remaining.endswith(marker):
+            remaining = remaining[:-len(marker)].strip()
+    return remaining or query
 
 
 # ── Round-robin 合并 ─────────────────────────────────────────────────────────
