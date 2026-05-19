@@ -29,7 +29,7 @@ from __future__ import annotations
 import re
 import time
 
-from config import get_knowledge_base_dir
+from config import get_knowledge_base_dir, is_datasheet_v2_facets_enabled
 from document_catalog import decompose_query_with_catalog
 from retriever import (
     ascii_boundary_pattern,
@@ -38,15 +38,28 @@ from retriever import (
 )
 
 
-SKILL_META = {
-    "name": "search_datasheet_v2",
-    "description": (
+def _skill_description() -> str:
+    if not is_datasheet_v2_facets_enabled():
+        return (
+            "该Skill处理 datasheet / 芯片手册查询，适合芯片型号、功能支持、参数、接口、时序、"
+            "电气特性等问题，如 'DLPC6540 是否支持 DynamicBlack'。"
+            "当前已关闭 6 切面扩展检索；Planner 生成 query 时应保留用户原始技术关键词和型号，"
+            "不要追加 feature overview、functional description、configuration control、pinout、"
+            "timing 等泛化扩展词。文档实体会在 Skill 内部作为 source filter 使用。"
+            "不处理企业 HR、财务报销、行政、IT 账号登录等内部制度问题。"
+        )
+    return (
         "该Skill处理 datasheet / 芯片手册的【多切面】查询, 面向【枚举/总览/设计要求】型问题, "
         "如 'I2C 接口或信号有哪些'、'Oscillator Timing 要求'、'ESD 设计要求'。"
         "采用工程视角的 6 个通用切面（物理形态/功能定位/参数等级/性能时序/系统条件/配置控制）, "
         "切面 keywords 与主题词拼接成 facet query, 文档实体优先作为 source filter 使用。"
         "不处理企业 HR、财务报销、行政、IT 账号登录等内部制度问题。"
-    ),
+    )
+
+
+SKILL_META = {
+    "name": "search_datasheet_v2",
+    "description": _skill_description,
     "retrieval_method": "hybrid",
 }
 
@@ -160,7 +173,13 @@ _DATASHEET_SOURCE_HINTS = (
 # ── 入口 ──────────────────────────────────────────────────────────────────────
 
 def execute(query: str, retriever, query_structure: dict = None) -> list[dict]:
-    original_search_query = query
+    facets_enabled = is_datasheet_v2_facets_enabled()
+    original_search_query = _select_input_query(query, query_structure, prefer_raw=not facets_enabled)
+    if original_search_query != query:
+        print(
+            "[search_datasheet_v2] 单次检索使用 QueryUnderstanding.what 原始问题: "
+            f"{original_search_query!r}"
+        )
     decomposition = decompose_query_with_catalog(original_search_query, kb_dir=get_knowledge_base_dir())
     scoped_sources = {
         scope["source"]
@@ -226,16 +245,24 @@ def execute(query: str, retriever, query_structure: dict = None) -> list[dict]:
         print(f"[search_datasheet_v2] ℹ️ 设备型号模糊命中: {device_aliases}")
 
     where = {"source": {"$in": list(target_sources)}} if target_sources else None
-    facet_results = _run_faceted_retrieval(retriever, device_prefix, topic_or_query, where)
+    if facets_enabled:
+        facet_results = _run_faceted_retrieval(retriever, device_prefix, topic_or_query, where)
 
-    # bm25 不吃 where, 这里按 target_sources 做最终来源兜底过滤
-    if target_sources:
-        facet_results = {
-            facet: [r for r in hits if r.get("source") in target_sources]
-            for facet, hits in facet_results.items()
-        }
+        # bm25 不吃 where, 这里按 target_sources 做最终来源兜底过滤
+        if target_sources:
+            facet_results = {
+                facet: [r for r in hits if r.get("source") in target_sources]
+                for facet, hits in facet_results.items()
+            }
 
-    merged = _facet_round_robin_topk(facet_results, total=TOP_K_TOTAL, min_per_facet=MIN_PER_FACET)
+        merged = _facet_round_robin_topk(facet_results, total=TOP_K_TOTAL, min_per_facet=MIN_PER_FACET)
+    else:
+        print(
+            "[search_datasheet_v2] 6 切面检索已关闭: "
+            f"使用单次 hybrid query={topic_or_query!r}"
+        )
+        merged = _run_single_query_retrieval(retriever, topic_or_query, where, target_sources)
+
     # 将设备 alias 信息盖到每条结果上, 供下游 generator 在回答里向用户说明模糊命中
     if device_aliases and merged:
         for r in merged:
@@ -455,6 +482,23 @@ def _run_faceted_retrieval(
     return results
 
 
+def _run_single_query_retrieval(
+    retriever,
+    query: str,
+    where: dict | None,
+    target_sources: set[str],
+) -> list[dict]:
+    """Run one hybrid retrieval pass when 6-facet fan-out is disabled."""
+    start = time.perf_counter()
+    hits = retriever.search(query, method="hybrid", top_k=TOP_K_TOTAL, where=where)
+    took_ms = int((time.perf_counter() - start) * 1000)
+    if target_sources:
+        hits = [hit for hit in hits if hit.get("source") in target_sources]
+    tagged = [dict(hit, facet="single_query", facet_query=query) for hit in hits]
+    print(f"[search_datasheet_v2] single_query hits={len(tagged)} took={took_ms}ms")
+    return tagged
+
+
 def _build_facet_query(facet_keywords: str, device_prefix: str, topic_or_query: str) -> str:
     """构造 facet query: {device_prefix} {topic_or_query} {facet_keywords}。
 
@@ -582,3 +626,29 @@ def _extract_search_query(query: str, query_structure: dict | None) -> str:
     if extract_datasheet_entity_tokens(what):
         return what
     return query
+
+
+def _select_input_query(query: str, query_structure: dict | None, *, prefer_raw: bool) -> str:
+    """Pick the query that should enter V2 parsing.
+
+    When 6-facet retrieval is disabled, the goal is diagnosis with the user's
+    original technical wording. The planner may append broad expansion terms
+    such as "feature overview" or "configuration control", so prefer the
+    QueryUnderstanding `what` dimension for this mode.
+    """
+    if not prefer_raw:
+        return query
+    what = (
+        (query_structure or {})
+        .get("dimensions", {})
+        .get("what", {})
+        .get("value")
+    )
+    raw = " ".join(str(what or "").split()).strip()
+    if not raw:
+        return query
+    raw_devices = _detect_device_tokens(raw)
+    query_devices = _detect_device_tokens(query)
+    if not raw_devices and query_devices:
+        return f"{' '.join(query_devices)} {raw}"
+    return raw

@@ -82,5 +82,7 @@ def get_skill_descriptions() -> str:
     lines = []
     for name, skill in registry.items():
         desc = skill["meta"].get("description", "（无描述）")
+        if callable(desc):
+            desc = desc()
         lines.append(f"  - {name}: {desc}")
     return "\n".join(lines)

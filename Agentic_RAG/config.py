@@ -45,6 +45,17 @@ CHUNK_SIZE = 600
 # 检索
 TOP_K = 10
 
+# Datasheet V2 6 切面检索开关。
+# False → 暂时关闭 physical/functional/parameter/timing/condition/config 6 路切面，
+#         仅使用去掉文档实体后的原始语义 query 跑一次 hybrid 检索，方便定位召回问题。
+# True  → 恢复 6 切面 query + round-robin 合并。
+DATASHEET_V2_ENABLE_FACETS = False
+
+
+def is_datasheet_v2_facets_enabled() -> bool:
+    return DATASHEET_V2_ENABLE_FACETS
+
+
 # Chroma 索引持久化
 # True  → 使用本地持久化目录，按内容 hash 跳过已存在 chunk，避免 Streamlit 每次启动全量 embedding
 # False → 使用内存索引，每次启动重建，适合快速/隔离测试
