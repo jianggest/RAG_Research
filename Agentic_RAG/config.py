@@ -45,15 +45,26 @@ CHUNK_SIZE = 600
 # 检索
 TOP_K = 10
 
-# Datasheet V2 6 切面检索开关。
-# False → 暂时关闭 physical/functional/parameter/timing/condition/config 6 路切面，
-#         仅使用去掉文档实体后的原始语义 query 跑一次 hybrid 检索，方便定位召回问题。
-# True  → 恢复 6 切面 query + round-robin 合并。
+# Datasheet V2 检索策略开关。
+# DATASHEET_V2_ENABLE_FACETS=True:
+#   恢复 physical/functional/parameter/timing/condition/config 6 路切面全量 fan-out。
+# DATASHEET_V2_ENABLE_ADAPTIVE_FACETS=True 且 6 路全量 fan-out 关闭:
+#   先用去掉文档实体后的原始语义 query 跑一次 hybrid 检索；证据不足时，再按问题类型
+#   选择少量相关切面做 fallback，避免每个问题都强行追加 6 层噪声。
+# 两者都为 False:
+#   仅单次 hybrid 检索，方便定位召回问题。
 DATASHEET_V2_ENABLE_FACETS = False
+DATASHEET_V2_ENABLE_ADAPTIVE_FACETS = True
+DATASHEET_V2_ADAPTIVE_MAX_FACETS = 6
+DATASHEET_V2_PRIMARY_TOP_K = 12
 
 
 def is_datasheet_v2_facets_enabled() -> bool:
     return DATASHEET_V2_ENABLE_FACETS
+
+
+def is_datasheet_v2_adaptive_facets_enabled() -> bool:
+    return DATASHEET_V2_ENABLE_ADAPTIVE_FACETS
 
 
 # Chroma 索引持久化

@@ -29,7 +29,13 @@ from __future__ import annotations
 import re
 import time
 
-from config import get_knowledge_base_dir, is_datasheet_v2_facets_enabled
+from config import (
+    DATASHEET_V2_ADAPTIVE_MAX_FACETS,
+    DATASHEET_V2_PRIMARY_TOP_K,
+    get_knowledge_base_dir,
+    is_datasheet_v2_adaptive_facets_enabled,
+    is_datasheet_v2_facets_enabled,
+)
 from document_catalog import decompose_query_with_catalog
 from retriever import (
     ascii_boundary_pattern,
@@ -39,20 +45,29 @@ from retriever import (
 
 
 def _skill_description() -> str:
-    if not is_datasheet_v2_facets_enabled():
+    if is_datasheet_v2_facets_enabled():
+        return (
+            "该Skill处理 datasheet / 芯片手册的【多切面】查询, 面向【枚举/总览/设计要求】型问题, "
+            "如 'I2C 接口或信号有哪些'、'Oscillator Timing 要求'、'ESD 设计要求'。"
+            "采用工程视角的 6 个通用切面（物理形态/功能定位/参数等级/性能时序/系统条件/配置控制）, "
+            "切面 keywords 与主题词拼接成 facet query, 文档实体优先作为 source filter 使用。"
+            "不处理企业 HR、财务报销、行政、IT 账号登录等内部制度问题。"
+        )
+    if is_datasheet_v2_adaptive_facets_enabled():
         return (
             "该Skill处理 datasheet / 芯片手册查询，适合芯片型号、功能支持、参数、接口、时序、"
             "电气特性等问题，如 'DLPC6540 是否支持 DynamicBlack'。"
-            "当前已关闭 6 切面扩展检索；Planner 生成 query 时应保留用户原始技术关键词和型号，"
-            "不要追加 feature overview、functional description、configuration control、pinout、"
-            "timing 等泛化扩展词。文档实体会在 Skill 内部作为 source filter 使用。"
+            "默认先使用用户原始技术关键词和型号做单次 hybrid 检索；若证据不足，Skill 内部会按问题类型"
+            "选择少量相关工程切面做 fallback。Planner 不要追加 feature overview、functional description、"
+            "configuration control、pinout、timing 等泛化扩展词。文档实体会在 Skill 内部作为 source filter 使用。"
             "不处理企业 HR、财务报销、行政、IT 账号登录等内部制度问题。"
         )
     return (
-        "该Skill处理 datasheet / 芯片手册的【多切面】查询, 面向【枚举/总览/设计要求】型问题, "
-        "如 'I2C 接口或信号有哪些'、'Oscillator Timing 要求'、'ESD 设计要求'。"
-        "采用工程视角的 6 个通用切面（物理形态/功能定位/参数等级/性能时序/系统条件/配置控制）, "
-        "切面 keywords 与主题词拼接成 facet query, 文档实体优先作为 source filter 使用。"
+        "该Skill处理 datasheet / 芯片手册查询，适合芯片型号、功能支持、参数、接口、时序、"
+        "电气特性等问题，如 'DLPC6540 是否支持 DynamicBlack'。"
+        "当前已关闭切面扩展检索；Planner 生成 query 时应保留用户原始技术关键词和型号，"
+        "不要追加 feature overview、functional description、configuration control、pinout、"
+        "timing 等泛化扩展词。文档实体会在 Skill 内部作为 source filter 使用。"
         "不处理企业 HR、财务报销、行政、IT 账号登录等内部制度问题。"
     )
 
@@ -170,10 +185,150 @@ _DATASHEET_SOURCE_HINTS = (
 )
 
 
+_FACET_TRIGGER_PATTERNS: dict[str, tuple[str, ...]] = {
+    "physical_scope": (
+        r"\bpin(?:out)?\b",
+        r"\bball\b",
+        r"\bsignal\b",
+        r"\binterface\b",
+        r"\bport\b",
+        r"引脚",
+        r"管脚",
+        r"封装",
+        r"接口",
+        r"信号",
+    ),
+    "functional_role": (
+        r"\bmaster\b",
+        r"\bslave\b",
+        r"\brole\b",
+        r"\bfunction(?:al)?\b",
+        r"\bcontrol\b",
+        r"\bdata\b",
+        r"主从",
+        r"功能",
+        r"作用",
+        r"职责",
+    ),
+    "parameters_and_ratings": (
+        r"\bvoltage\b",
+        r"\bcurrent\b",
+        r"\btemperature\b",
+        r"\bHBM\b",
+        r"\bCDM\b",
+        r"\btolerance\b",
+        r"\brating\b",
+        r"\blimit\b",
+        r"\bESD\b",
+        r"\bV\b",
+        r"\bmA\b",
+        r"电压",
+        r"电流",
+        r"温度",
+        r"容差",
+        r"等级",
+        r"最大",
+        r"最小",
+    ),
+    "performance_timing": (
+        r"\btiming\b",
+        r"\brate\b",
+        r"\bfrequency\b",
+        r"\bMHz\b",
+        r"\bkHz\b",
+        r"\bsetup\b",
+        r"\bhold\b",
+        r"\bcycle\b",
+        r"\bperiod\b",
+        r"\bjitter\b",
+        r"\blatency\b",
+        r"\bns\b",
+        r"时序",
+        r"频率",
+        r"速率",
+        r"周期",
+        r"延迟",
+    ),
+    "system_conditions": (
+        r"\breset\b",
+        r"\binit(?:ialization)?\b",
+        r"\bsequence\b",
+        r"\blayout\b",
+        r"\bpower[- ]?on\b",
+        r"\bsupply\b",
+        r"复位",
+        r"初始化",
+        r"上电",
+        r"电源时序",
+        r"布局",
+        r"条件",
+        r"依赖",
+    ),
+    "configuration_control": (
+        r"\bregister\b",
+        r"\bcommand\b",
+        r"\bfirmware\b",
+        r"\bconfiguration\b",
+        r"\bconfig\b",
+        r"\bmode\b",
+        r"\benable\b",
+        r"\bdisable\b",
+        r"\bsupport(?:s|ed)?\b",
+        r"寄存器",
+        r"命令",
+        r"固件",
+        r"配置",
+        r"模式",
+        r"启用",
+        r"关闭",
+        r"支持",
+    ),
+}
+
+_FEATURE_SUPPORT_PATTERNS = (
+    r"\bsupport(?:s|ed)?\b",
+    r"\bfeature\b",
+    r"\benable\b",
+    r"\bcapabilit(?:y|ies)\b",
+    r"支持",
+    r"功能",
+    r"特性",
+    r"启用",
+    r"有没有",
+    r"是否",
+)
+
+_DIRECT_EVIDENCE_PATTERNS = (
+    r"\bsupport(?:s|ed)?\b",
+    r"\bnot\s+support(?:ed)?\b",
+    r"\bfeature\b",
+    r"\bcapabilit(?:y|ies)\b",
+    r"\bregister\b",
+    r"\bcommand\b",
+    r"\bfirmware\b",
+    r"\bpin(?:out)?\b",
+    r"\bsignal\b",
+    r"\btiming\b",
+    r"\belectrical characteristics\b",
+    r"\brecommended operating conditions\b",
+    r"支持",
+    r"不支持",
+    r"功能",
+    r"特性",
+    r"寄存器",
+    r"命令",
+    r"固件",
+    r"引脚",
+    r"信号",
+    r"时序",
+)
+
+
 # ── 入口 ──────────────────────────────────────────────────────────────────────
 
 def execute(query: str, retriever, query_structure: dict = None) -> list[dict]:
     facets_enabled = is_datasheet_v2_facets_enabled()
+    adaptive_facets_enabled = is_datasheet_v2_adaptive_facets_enabled()
     original_search_query = _select_input_query(query, query_structure, prefer_raw=not facets_enabled)
     if original_search_query != query:
         print(
@@ -256,6 +411,18 @@ def execute(query: str, retriever, query_structure: dict = None) -> list[dict]:
             }
 
         merged = _facet_round_robin_topk(facet_results, total=TOP_K_TOTAL, min_per_facet=MIN_PER_FACET)
+    elif adaptive_facets_enabled:
+        print(
+            "[search_datasheet_v2] 自适应切面检索: "
+            f"primary query={topic_or_query!r}"
+        )
+        merged = _run_adaptive_retrieval(
+            retriever,
+            device_prefix,
+            topic_or_query,
+            where,
+            target_sources,
+        )
     else:
         print(
             "[search_datasheet_v2] 6 切面检索已关闭: "
@@ -462,13 +629,18 @@ def _run_faceted_retrieval(
     device_prefix: str,
     topic_or_query: str,
     where: dict | None,
+    selected_facets: list[str] | None = None,
 ) -> dict[str, list[dict]]:
-    """对每个切面跑一次 hybrid 检索, 串行执行, 打印每切面耗时。
+    """对选定切面跑 hybrid 检索, 串行执行, 打印每切面耗时。
 
     返回 {facet_key: [SearchResult, ...]}, 每个 SearchResult 带 `facet` 字段。
     """
     results: dict[str, list[dict]] = {}
-    for facet_key, facet_def in _FACETS.items():
+    facet_keys = selected_facets or list(_FACETS)
+    for facet_key in facet_keys:
+        facet_def = _FACETS.get(facet_key)
+        if not facet_def:
+            continue
         facet_query = _build_facet_query(facet_def["keywords"], device_prefix, topic_or_query)
         start = time.perf_counter()
         hits = retriever.search(facet_query, method="hybrid", top_k=PER_FACET_FETCH, where=where)
@@ -482,21 +654,149 @@ def _run_faceted_retrieval(
     return results
 
 
+def _run_adaptive_retrieval(
+    retriever,
+    device_prefix: str,
+    topic_or_query: str,
+    where: dict | None,
+    target_sources: set[str],
+) -> list[dict]:
+    """Run primary retrieval first, then a small facet fallback only if needed."""
+    primary = _run_single_query_retrieval(
+        retriever,
+        topic_or_query,
+        where,
+        target_sources,
+        top_k=DATASHEET_V2_PRIMARY_TOP_K,
+        facet_label="primary_query",
+    )
+    if _primary_evidence_is_strong(primary, topic_or_query):
+        print("[search_datasheet_v2] primary evidence 足够强, 跳过 facet fallback")
+        return primary[:TOP_K_TOTAL]
+
+    selected_facets = _select_adaptive_facets(topic_or_query, max_facets=DATASHEET_V2_ADAPTIVE_MAX_FACETS)
+    if not selected_facets:
+        print("[search_datasheet_v2] 未选中相关 facet, 返回 primary 结果")
+        return primary[:TOP_K_TOTAL]
+
+    print(f"[search_datasheet_v2] primary evidence 偏弱, fallback facets={selected_facets}")
+    facet_results = _run_faceted_retrieval(
+        retriever,
+        device_prefix,
+        topic_or_query,
+        where,
+        selected_facets=selected_facets,
+    )
+    if target_sources:
+        facet_results = {
+            facet: [r for r in hits if r.get("source") in target_sources]
+            for facet, hits in facet_results.items()
+        }
+    fallback = _facet_round_robin_topk(facet_results, total=TOP_K_TOTAL, min_per_facet=1)
+    return _merge_primary_and_fallback(primary, fallback, total=TOP_K_TOTAL)
+
+
 def _run_single_query_retrieval(
     retriever,
     query: str,
     where: dict | None,
     target_sources: set[str],
+    top_k: int = TOP_K_TOTAL,
+    facet_label: str = "single_query",
 ) -> list[dict]:
-    """Run one hybrid retrieval pass when 6-facet fan-out is disabled."""
+    """Run one hybrid retrieval pass."""
     start = time.perf_counter()
-    hits = retriever.search(query, method="hybrid", top_k=TOP_K_TOTAL, where=where)
+    hits = retriever.search(query, method="hybrid", top_k=top_k, where=where)
     took_ms = int((time.perf_counter() - start) * 1000)
     if target_sources:
         hits = [hit for hit in hits if hit.get("source") in target_sources]
-    tagged = [dict(hit, facet="single_query", facet_query=query) for hit in hits]
-    print(f"[search_datasheet_v2] single_query hits={len(tagged)} took={took_ms}ms")
+    tagged = [dict(hit, facet=facet_label, facet_query=query) for hit in hits]
+    print(f"[search_datasheet_v2] {facet_label} hits={len(tagged)} took={took_ms}ms")
     return tagged
+
+
+def _primary_evidence_is_strong(results: list[dict], query: str) -> bool:
+    """Conservative gate: only skip fallback when top evidence directly echoes query terms."""
+    if not results:
+        return False
+    top_text = " ".join((r.get("text") or "") for r in results[:3])
+    if not top_text.strip():
+        return False
+
+    query_terms = _high_signal_query_terms(query)
+    if not query_terms:
+        return len(results) >= 3
+    top_norm = normalize_datasheet_text(top_text).casefold()
+    matched_terms = sum(1 for term in query_terms if term in top_norm)
+    enough_terms = matched_terms >= min(2, len(query_terms))
+    direct_evidence = _matches_any(_DIRECT_EVIDENCE_PATTERNS, top_text)
+    return enough_terms and (direct_evidence or len(results) >= 3)
+
+
+def _select_adaptive_facets(query: str, max_facets: int = 2) -> list[str]:
+    """Select a few evidence directions from the facet catalog based on question signals."""
+    normalized = normalize_datasheet_text(query)
+    scores: dict[str, int] = {facet: 0 for facet in _FACETS}
+    for facet, patterns in _FACET_TRIGGER_PATTERNS.items():
+        scores[facet] += sum(1 for pattern in patterns if re.search(pattern, normalized, flags=re.IGNORECASE))
+
+    if _matches_any(_FEATURE_SUPPORT_PATTERNS, normalized):
+        scores["configuration_control"] += 3
+        scores["system_conditions"] += 2
+        scores["functional_role"] = min(scores["functional_role"], 1)
+    if _detect_topic(normalized) in {"I2C", "SPI", "UART", "USB", "JTAG", "GPIO"}:
+        scores["physical_scope"] += 2
+        scores["functional_role"] += 1
+    if _detect_topic(normalized) in {"oscillator", "MOSC", "PLL", "clock"}:
+        scores["performance_timing"] += 2
+        scores["system_conditions"] += 1
+    if _detect_topic(normalized) in {"ESD", "power"}:
+        scores["parameters_and_ratings"] += 2
+        scores["system_conditions"] += 1
+
+    ranked = sorted(scores.items(), key=lambda item: (-item[1], list(_FACETS).index(item[0])))
+    selected = [facet for facet, score in ranked if score > 0][: max(0, max_facets)]
+    return selected
+
+
+def _merge_primary_and_fallback(primary: list[dict], fallback: list[dict], total: int) -> list[dict]:
+    """Keep primary ordering, then append non-duplicate facet fallback evidence."""
+    merged: list[dict] = []
+    seen: set[str] = set()
+    for result in primary + fallback:
+        key = (result.get("text") or "")[:160]
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        merged.append(result)
+        if len(merged) >= total:
+            break
+    return merged
+
+
+def _high_signal_query_terms(query: str) -> list[str]:
+    """Extract query terms worth requiring in top evidence."""
+    normalized = normalize_datasheet_text(query)
+    terms: list[str] = []
+    for token in extract_datasheet_entity_tokens(normalized):
+        if token not in terms:
+            terms.append(token.casefold())
+    for token in re.findall(r"[A-Za-z][A-Za-z0-9_]{3,}", normalized):
+        lowered = token.casefold()
+        if lowered in {"what", "does", "with", "from", "this", "that", "support", "supports", "supported"}:
+            continue
+        if lowered not in terms:
+            terms.append(lowered)
+    for token in re.findall(r"[\u4e00-\u9fff]{2,}", normalized):
+        if token in {"是否支持", "支持", "功能", "特性", "是什么", "有哪些", "多少", "要求", "可以", "是否"}:
+            continue
+        if token not in terms:
+            terms.append(token)
+    return terms[:6]
+
+
+def _matches_any(patterns: tuple[str, ...], text: str) -> bool:
+    return any(re.search(pattern, text, flags=re.IGNORECASE) for pattern in patterns)
 
 
 def _build_facet_query(facet_keywords: str, device_prefix: str, topic_or_query: str) -> str:
