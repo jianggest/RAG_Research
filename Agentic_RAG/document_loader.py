@@ -10,8 +10,8 @@
 
 对外接口：
   load_documents(kb_dir) -> list[Chunk]
-  chunk_markdown(content, source, max_size) -> list[Chunk]   # 供测试直接调用
-  chunk_text(content, source, max_size) -> list[Chunk]       # 供测试直接调用
+  chunk_markdown(content, source, max_size, is_datasheet_source) -> list[Chunk]   # 供测试直接调用
+  chunk_text(content, source, max_size, is_datasheet_source) -> list[Chunk]       # 供测试直接调用
 """
 
 import re
@@ -289,9 +289,20 @@ def _with_heading(heading: str, block: str) -> str:
     return f"{heading}\n\n{block}"
 
 
-def _build_chunk(text: str, source: str, index: int) -> Chunk:
+def _resolve_datasheet_source(source: str, is_datasheet_source: bool | None = None) -> bool:
+    """Return whether a source should use datasheet-specific indexing behavior."""
+    return bool(is_datasheet_source) if is_datasheet_source is not None else source in DATASHEET_SOURCES
+
+
+def _build_chunk(
+    text: str,
+    source: str,
+    index: int,
+    *,
+    is_datasheet_source: bool | None = None,
+) -> Chunk:
     stripped = text.strip()
-    is_datasheet = source in DATASHEET_SOURCES
+    is_datasheet = _resolve_datasheet_source(source, is_datasheet_source)
     normalized_text = normalize_datasheet_text(stripped) if is_datasheet else re.sub(r"\s+", " ", stripped)
     anchors_used, anchors_defined = _extract_anchors(stripped)
     refs_outbound = _extract_refs_outbound(stripped)
@@ -312,7 +323,12 @@ def _build_chunk(text: str, source: str, index: int) -> Chunk:
     )
 
 
-def chunk_markdown(content: str, source: str, max_size: int = CHUNK_SIZE) -> list[Chunk]:
+def chunk_markdown(
+    content: str,
+    source: str,
+    max_size: int = CHUNK_SIZE,
+    is_datasheet_source: bool | None = None,
+) -> list[Chunk]:
     """
     表格感知分块：
     - 表格块无论多大，保持完整（不受 max_size 限制）
@@ -326,7 +342,12 @@ def chunk_markdown(content: str, source: str, max_size: int = CHUNK_SIZE) -> lis
         nonlocal chunk_index
         text = text.strip()
         if text:  # 过滤空白内容
-            chunks.append(_build_chunk(text, source, chunk_index))
+            chunks.append(_build_chunk(
+                text,
+                source,
+                chunk_index,
+                is_datasheet_source=is_datasheet_source,
+            ))
             chunk_index += 1
 
     # 按标题分节，每节内部再细分
@@ -380,7 +401,13 @@ def chunk_markdown(content: str, source: str, max_size: int = CHUNK_SIZE) -> lis
 
 # ── 普通文本分块 ──────────────────────────────────────────────────────────────
 
-def chunk_text(content: str, source: str, max_size: int = CHUNK_SIZE, overlap: int = 50) -> list[Chunk]:
+def chunk_text(
+    content: str,
+    source: str,
+    max_size: int = CHUNK_SIZE,
+    overlap: int = 50,
+    is_datasheet_source: bool | None = None,
+) -> list[Chunk]:
     """滑动窗口分块，用于 .txt 文件（无表格感知）。"""
     chunks: list[Chunk] = []
     start = 0
@@ -389,7 +416,12 @@ def chunk_text(content: str, source: str, max_size: int = CHUNK_SIZE, overlap: i
     while start < len(content):
         text = content[start : start + max_size].strip()
         if text:
-            chunks.append(_build_chunk(text, source, index))
+            chunks.append(_build_chunk(
+                text,
+                source,
+                index,
+                is_datasheet_source=is_datasheet_source,
+            ))
             index += 1
         start += max_size - overlap
 
@@ -410,6 +442,7 @@ def load_documents(kb_dir: Path) -> list[Chunk]:
 
     all_chunks: list[Chunk] = []
     loaded_documents: list[dict] = []
+    is_datasheet_source = True if kb_dir.name.lower() == "datasheet" else None
 
     for md_file in sorted(kb_dir.glob("*.md")):
         if md_file.stem.endswith("_clean"):
@@ -428,14 +461,14 @@ def load_documents(kb_dir: Path) -> list[Chunk]:
         label = target.name
         content = target.read_text(encoding="utf-8")
         loaded_documents.append({"source": label, "content": content})
-        file_chunks = chunk_markdown(content, label)
+        file_chunks = chunk_markdown(content, label, is_datasheet_source=is_datasheet_source)
         all_chunks.extend(file_chunks)
         print(f"[Loader] {label} → {len(file_chunks)} chunks")
 
     for txt_file in sorted(kb_dir.glob("*.txt")):
         content = txt_file.read_text(encoding="utf-8")
         loaded_documents.append({"source": txt_file.name, "content": content})
-        file_chunks = chunk_text(content, txt_file.name)
+        file_chunks = chunk_text(content, txt_file.name, is_datasheet_source=is_datasheet_source)
         all_chunks.extend(file_chunks)
         print(f"[Loader] {txt_file.name} → {len(file_chunks)} chunks")
 

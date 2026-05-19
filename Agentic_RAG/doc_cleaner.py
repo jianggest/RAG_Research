@@ -55,6 +55,8 @@ _DATASHEET_HINTS = (
 
 def _is_datasheet_document(md_path: Path, content: str) -> bool:
     """判断是否为 datasheet/硬件规格书。datasheet 的 NOTE/脚注/表格行都是有效证据。"""
+    if md_path.parent.name.lower() == "datasheet":
+        return True
     if md_path.name in DATASHEET_SOURCES:
         return True
     haystack = f"{md_path.name}\n{content[:12000]}".lower()
