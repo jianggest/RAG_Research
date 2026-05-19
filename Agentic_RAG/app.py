@@ -12,7 +12,7 @@ import re
 from pathlib import Path
 
 from agentic_rag import run
-from config import get_knowledge_base_dir, get_rag_profile
+from config import SHOW_HOME_DEBUG_PANELS, get_knowledge_base_dir, get_rag_profile
 from document_loader import load_documents
 from evaluator import get_stats, record_satisfied, record_unsatisfied
 from retriever import Retriever
@@ -172,17 +172,18 @@ with st.sidebar:
                     st.markdown(f"回答：{rec['answer'][:100]}…")
                     st.divider()
 
-    st.divider()
+    if SHOW_HOME_DEBUG_PANELS:
+        st.divider()
 
-    # ── Chunk 调试区 ──────────────────────────────────────────────────────────
-    st.subheader("📦 知识库 Chunks")
-    st.caption(f"共 {len(all_chunks)} 个 chunk")
+        # ── Chunk 调试区 ──────────────────────────────────────────────────────
+        st.subheader("📦 知识库 Chunks")
+        st.caption(f"共 {len(all_chunks)} 个 chunk")
 
-    if st.checkbox("展开查看所有 chunks"):
-        for chunk in all_chunks:
-            label = f"[{chunk['source']}] #{chunk['chunk_index']} {'📊 表格' if chunk['is_table'] else '📝 文本'}"
-            with st.expander(label):
-                st.text(chunk["text"])
+        if st.checkbox("展开查看所有 chunks"):
+            for chunk in all_chunks:
+                label = f"[{chunk['source']}] #{chunk['chunk_index']} {'📊 表格' if chunk['is_table'] else '📝 文本'}"
+                with st.expander(label):
+                    st.text(chunk["text"])
 
 
 # ── 主区域：问答 ──────────────────────────────────────────────────────────────
@@ -326,56 +327,57 @@ def _render_structured_references(refs: list, executed_steps: list) -> None:
 def _render_result(result: dict) -> None:
     """将 RunResult 的各部分渲染到页面上。"""
 
-    # Step 0：查询语义解析
-    qs = result.get("query_structure", {})
-    if qs:
-        with st.expander("🔎 查询语义解析（Step 0）", expanded=False):
-            dims = qs.get("dimensions", {})
-            cols = st.columns(3)
-            for col, (key, label) in zip(cols, [("who", "Who 主体"), ("where", "Where 地点"), ("what", "What 事项")]):
-                dim = dims.get(key, {})
-                val = (dim.get("value") or "—") + (" *(推断)*" if dim.get("inferred") else "")
-                col.metric(label, val)
-            if qs.get("expanded") and qs["expanded"] != qs.get("original"):
-                st.caption(f"**补全语义：** {qs['expanded']}")
-            if qs.get("constraints"):
-                st.caption("**约束条件：** " + "、".join(f"{c['type']}:{c['value']}" for c in qs["constraints"]))
-            if qs.get("conflicts"):
-                st.warning("⚠️ 冲突检测：" + "；".join(qs["conflicts"]))
-            st.caption(f"**意图颗粒度：** {qs.get('intent_granularity', '—')}")
+    if SHOW_HOME_DEBUG_PANELS:
+        # Step 0：查询语义解析
+        qs = result.get("query_structure", {})
+        if qs:
+            with st.expander("🔎 查询语义解析（Step 0）", expanded=False):
+                dims = qs.get("dimensions", {})
+                cols = st.columns(3)
+                for col, (key, label) in zip(cols, [("who", "Who 主体"), ("where", "Where 地点"), ("what", "What 事项")]):
+                    dim = dims.get(key, {})
+                    val = (dim.get("value") or "—") + (" *(推断)*" if dim.get("inferred") else "")
+                    col.metric(label, val)
+                if qs.get("expanded") and qs["expanded"] != qs.get("original"):
+                    st.caption(f"**补全语义：** {qs['expanded']}")
+                if qs.get("constraints"):
+                    st.caption("**约束条件：** " + "、".join(f"{c['type']}:{c['value']}" for c in qs["constraints"]))
+                if qs.get("conflicts"):
+                    st.warning("⚠️ 冲突检测：" + "；".join(qs["conflicts"]))
+                st.caption(f"**意图颗粒度：** {qs.get('intent_granularity', '—')}")
 
-    # 调用计划
-    with st.expander("📋 调用计划（Planner 输出）", expanded=False):
-        plan_data = result.get("plan", {})
-        if not plan_data:
-            st.info("本次问题触发追问，未生成检索计划。")
-        elif "error" in plan_data:
-            st.error(f"规划失败：{plan_data['error']}")
-        else:
-            st.markdown(f"**推理过程：** {plan_data.get('reasoning', '—')}")
-            for step in plan_data.get("steps", []):
-                dep_note = f" ← 依赖 Step {step['depends_on']}" if step.get("depends_on") else ""
-                st.markdown(f"- **Step {step['step_id']}** `{step['skill']}` | 查询：`{step['query']}`{dep_note}")
+        # 调用计划
+        with st.expander("📋 调用计划（Planner 输出）", expanded=False):
+            plan_data = result.get("plan", {})
+            if not plan_data:
+                st.info("本次问题触发追问，未生成检索计划。")
+            elif "error" in plan_data:
+                st.error(f"规划失败：{plan_data['error']}")
+            else:
+                st.markdown(f"**推理过程：** {plan_data.get('reasoning', '—')}")
+                for step in plan_data.get("steps", []):
+                    dep_note = f" ← 依赖 Step {step['depends_on']}" if step.get("depends_on") else ""
+                    st.markdown(f"- **Step {step['step_id']}** `{step['skill']}` | 查询：`{step['query']}`{dep_note}")
 
-    # 执行过程
-    with st.expander("🔍 执行过程（Executor 输出）", expanded=False):
-        if not result.get("executed_steps"):
-            st.info("本次问题触发追问，未执行检索。")
-        else:
-            for step in result["executed_steps"]:
-                st.markdown(f"**Step {step['step_id']} — `{step['skill']}`**")
-                st.caption(f"实际查询词：{step['query']}")
-                if step["results"]:
-                    for i, r in enumerate(step["results"][:3], 1):
-                        st.text(f"[{i}] 来源: {r['source']} | 相关度: {r['score']}")
-                        img_path = _extract_page_img(r["text"])
-                        if img_path:
-                            st.image(img_path, caption=f"原始页面：{img_path.name}", width="stretch")
-                        else:
-                            st.code(r["text"], language=None)
-                else:
-                    st.warning("本步骤未检索到相关内容")
-                st.divider()
+        # 执行过程
+        with st.expander("🔍 执行过程（Executor 输出）", expanded=False):
+            if not result.get("executed_steps"):
+                st.info("本次问题触发追问，未执行检索。")
+            else:
+                for step in result["executed_steps"]:
+                    st.markdown(f"**Step {step['step_id']} — `{step['skill']}`**")
+                    st.caption(f"实际查询词：{step['query']}")
+                    if step["results"]:
+                        for i, r in enumerate(step["results"][:3], 1):
+                            st.text(f"[{i}] 来源: {r['source']} | 相关度: {r['score']}")
+                            img_path = _extract_page_img(r["text"])
+                            if img_path:
+                                st.image(img_path, caption=f"原始页面：{img_path.name}", width="stretch")
+                            else:
+                                st.code(r["text"], language=None)
+                    else:
+                        st.warning("本步骤未检索到相关内容")
+                    st.divider()
 
     # 最终回答（剔除内部页码标记，不暴露给用户）
     display_answer = _CITED_PAGE_RE.sub("", result["answer"]).strip()

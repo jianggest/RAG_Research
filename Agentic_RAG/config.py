@@ -42,6 +42,11 @@ def get_chroma_persist_dir(profile: str | None = None) -> Path:
 # 分块
 CHUNK_SIZE = 600
 
+# 首页调试面板
+# True  → 显示查询语义解析、Planner/Executor 输出和知识库 chunks 调试区
+# False → 默认隐藏上述内部过程，只展示问答主流程
+SHOW_HOME_DEBUG_PANELS = False
+
 # 检索
 TOP_K = 10
 
