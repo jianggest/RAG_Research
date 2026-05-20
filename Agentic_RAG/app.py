@@ -14,8 +14,10 @@ from pathlib import Path
 from agentic_rag import run
 from app_figure_assets import collect_figure_images_from_steps
 from config import SHOW_HOME_DEBUG_PANELS, get_knowledge_base_dir, get_rag_profile
-from document_loader import load_documents
+from doc_cleaner import clean_documents
+from document_loader import convert_pdfs, load_documents
 from evaluator import get_stats, record_satisfied, record_unsatisfied
+from pdf_figure_extractor import extract_pdf_figures
 from retriever import Retriever
 from structured_refs import (
     format_reference_label,
@@ -115,6 +117,251 @@ def init_retriever() -> tuple[Retriever, list]:
 retriever, all_chunks = init_retriever()
 
 
+# ── 知识库文档管理 ─────────────────────────────────────────────────────────────
+
+def _format_file_size(size_bytes: int) -> str:
+    if size_bytes < 1024:
+        return f"{size_bytes} B"
+    if size_bytes < 1024 * 1024:
+        return f"{size_bytes / 1024:.1f} KB"
+    return f"{size_bytes / (1024 * 1024):.1f} MB"
+
+
+def _safe_pdf_upload_target(kb_dir: Path, filename: str) -> tuple[Path | None, str | None]:
+    if not filename or not filename.strip():
+        return None, "上传失败：文件名不能为空。"
+
+    name = Path(filename).name
+    if name != filename or name in {".", ".."}:
+        return None, "上传失败：文件名不合法。"
+    if Path(name).suffix.lower() != ".pdf":
+        return None, "上传失败：仅支持 PDF 文件。"
+
+    kb_root = Path(kb_dir).resolve()
+    target = (kb_root / name).resolve()
+    try:
+        target.relative_to(kb_root)
+    except ValueError:
+        return None, "上传失败：目标路径不在当前知识库目录内。"
+    if target.exists():
+        return None, f"上传失败：{name} 已存在，请更换文件名后再上传。"
+    return target, None
+
+
+def process_uploaded_pdf(kb_dir: Path, pdf_path: Path, st_api=st) -> None:
+    with st_api.status("正在处理上传文档...", expanded=True) as status:
+        status.write("1/4 提取图片")
+        extract_pdf_figures(kb_dir, only_pdf_stem=pdf_path.stem)
+
+        status.write("2/4 转换 Markdown")
+        convert_pdfs(kb_dir)
+
+        status.write("3/4 清洗文档")
+        clean_documents(kb_dir)
+
+        status.write("4/4 建立索引")
+        chunks = load_documents(kb_dir)
+        refreshed_retriever = Retriever(chunks)
+        refreshed_retriever.build_index()
+
+        status.update(label="文档处理完成", state="complete", expanded=False)
+
+
+def render_knowledge_base_documents_sidebar(
+    st_api=st,
+    kb_dir: Path | None = None,
+    profile: str | None = None,
+    process_uploaded_pdf=process_uploaded_pdf,
+    clear_retriever_cache=None,
+) -> None:
+    kb_dir = Path(kb_dir) if kb_dir is not None else get_knowledge_base_dir()
+    profile = profile or get_rag_profile()
+    clear_retriever_cache = clear_retriever_cache or init_retriever.clear
+    uploaded_file = None
+    uploader_key = f"kb_pdf_upload_{profile}_{st_api.session_state.get('kb_upload_reset_nonce', 0)}"
+    upload_feedback = st_api.session_state.pop("kb_upload_feedback", None)
+    pdf_files = sorted([p for p in kb_dir.iterdir() if p.is_file() and p.suffix.lower() == ".pdf"], key=lambda p: p.name.lower())
+
+    with st_api.expander("我的文档库", expanded=False):
+        st_api.markdown(
+            """
+            <style>
+            .kb-header-actions {
+                display: flex;
+                justify-content: flex-end;
+                align-items: center;
+                gap: 0.18rem;
+                min-height: 1.75rem;
+            }
+            .kb-control-trigger {
+                width: 1.45rem;
+                height: 1.45rem;
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                border-radius: 0.35rem;
+                color: #4e5969;
+                font-size: 1.05rem;
+                line-height: 1;
+                user-select: none;
+            }
+            .kb-control-trigger:hover {
+                background: #f2f3f5 !important;
+            }
+            .kb-upload-toolbar {
+                display: flex;
+                justify-content: flex-end;
+                margin: -0.2rem 0 0.15rem 0;
+            }
+            div[data-testid="stPopover"] button {
+                border: 0 !important;
+                border-radius: 0.36rem !important;
+                width: 1.45rem !important;
+                min-width: 1.45rem !important;
+                height: 1.45rem !important;
+                min-height: 1.45rem !important;
+                padding: 0 !important;
+                background: transparent !important;
+                color: #4e5969 !important;
+                box-shadow: none !important;
+                font-size: 1.05rem !important;
+                line-height: 1 !important;
+            }
+            div[data-testid="stPopover"] button:hover {
+                background: #f2f3f5 !important;
+            }
+            .kb-native-doc-list {
+                margin-top: 0.35rem;
+            }
+            .kb-native-doc-list + div[data-testid="stDownloadButton"],
+            div[data-testid="stDownloadButton"] {
+                margin: 0 0 0.12rem 0 !important;
+            }
+            div[data-testid="stDownloadButton"] button {
+                border: 0 !important;
+                border-radius: 0.36rem !important;
+                min-height: 1.7rem !important;
+                height: 1.7rem !important;
+                padding: 0.22rem 0.34rem !important;
+                background: transparent !important;
+                color: #1f2329 !important;
+                box-shadow: none !important;
+                width: 100% !important;
+                justify-content: flex-start !important;
+                text-align: left !important;
+                font-size: 0.82rem !important;
+                font-weight: 400 !important;
+                line-height: 1.2 !important;
+            }
+            div[data-testid="stDownloadButton"] button:hover {
+                background: #f2f3f5 !important;
+            }
+            div[data-testid="stDownloadButton"] button p,
+            div[data-testid="stDownloadButton"] button span {
+                color: #1f2329 !important;
+                font-size: 0.82rem !important;
+                font-weight: 400 !important;
+                overflow: hidden !important;
+                text-overflow: ellipsis !important;
+                white-space: nowrap !important;
+                text-align: left !important;
+            }
+            </style>
+            """,
+            unsafe_allow_html=True,
+        )
+        info_col, action_col = st_api.columns([0.84, 0.16], vertical_alignment="center")
+        with info_col:
+            st_api.caption(f"当前知识库：{profile}")
+            st_api.caption(f"PDF 文档：{len(pdf_files)} 个")
+        with action_col:
+            st_api.markdown(
+                """
+                <div class="kb-header-actions">
+                    <span class="kb-control-trigger" title="更多">☷</span>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            if st_api.button("+", key=f"kb_open_upload_{profile}", help="点击上传", type="tertiary"):
+                st_api.session_state["kb_upload_open"] = True
+
+        if upload_feedback:
+            feedback_type, feedback_text = upload_feedback
+            if feedback_type == "error":
+                st_api.error(feedback_text)
+            elif feedback_type == "success":
+                st_api.success(feedback_text)
+            else:
+                st_api.warning(feedback_text)
+
+        if st_api.session_state.get("kb_upload_open", False):
+            st_api.markdown('<div class="kb-upload-toolbar"></div>', unsafe_allow_html=True)
+            if st_api.button("×", key=f"kb_close_upload_{profile}", help="关闭上传", type="tertiary"):
+                st_api.session_state["kb_upload_open"] = False
+            if st_api.session_state.get("kb_upload_open", False):
+                uploaded_file = st_api.file_uploader(
+                    "选择PDF",
+                    type=["pdf"],
+                    label_visibility="visible",
+                    key=uploader_key,
+                    help="选择要加入当前知识库的 PDF",
+                    width="stretch",
+                )
+
+        if not pdf_files:
+            st_api.caption("暂无 PDF 文档")
+        else:
+            st_api.markdown('<div class="kb-native-doc-list"></div>', unsafe_allow_html=True)
+            for pdf_path in pdf_files:
+                size_label = _format_file_size(pdf_path.stat().st_size)
+                st_api.download_button(
+                    f"📄 {pdf_path.name}    {size_label}",
+                    data=pdf_path.read_bytes(),
+                    file_name=pdf_path.name,
+                    mime="application/pdf",
+                    key=f"download_pdf_{profile}_{pdf_path.name}",
+                    help="点击下载 PDF",
+                )
+
+    if uploaded_file is None:
+        return
+
+    target_path, error = _safe_pdf_upload_target(kb_dir, uploaded_file.name)
+    if error:
+        st_api.session_state["kb_upload_reset_nonce"] = st_api.session_state.get("kb_upload_reset_nonce", 0) + 1
+        st_api.session_state["kb_upload_open"] = False
+        st_api.session_state["kb_upload_feedback"] = ("error", error)
+        st_api.rerun()
+        return
+    assert target_path is not None
+
+    try:
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        target_path.write_bytes(bytes(uploaded_file.getbuffer()))
+    except Exception as exc:
+        st_api.session_state["kb_upload_reset_nonce"] = st_api.session_state.get("kb_upload_reset_nonce", 0) + 1
+        st_api.session_state["kb_upload_open"] = False
+        st_api.session_state["kb_upload_feedback"] = ("error", f"上传失败：PDF 保存失败：{exc}")
+        st_api.rerun()
+        return
+
+    try:
+        process_uploaded_pdf(kb_dir, target_path, st_api)
+    except Exception as exc:
+        st_api.session_state["kb_upload_reset_nonce"] = st_api.session_state.get("kb_upload_reset_nonce", 0) + 1
+        st_api.session_state["kb_upload_open"] = False
+        st_api.session_state["kb_upload_feedback"] = ("error", f"上传失败：文档处理失败：{exc}")
+        st_api.rerun()
+        return
+
+    clear_retriever_cache()
+    st_api.session_state["kb_upload_reset_nonce"] = st_api.session_state.get("kb_upload_reset_nonce", 0) + 1
+    st_api.session_state["kb_upload_open"] = False
+    st_api.success(f"上传完成：{target_path.name}")
+    st_api.rerun()
+
+
 # ── session_state 初始化 ──────────────────────────────────────────────────────
 
 if "result" not in st.session_state:
@@ -131,6 +378,9 @@ if "selected_structured_ref" not in st.session_state:
 # ── 侧边栏 ────────────────────────────────────────────────────────────────────
 
 with st.sidebar:
+    render_knowledge_base_documents_sidebar()
+    st.divider()
+
     # ── 历史查询记录 ──────────────────────────────────────────────────────────
     st.subheader("🕘 历史查询")
 
