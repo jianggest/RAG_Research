@@ -26,6 +26,7 @@ Skill：search_datasheet_v2 — 多切面（faceted）检索 V2
 
 from __future__ import annotations
 
+import json
 import re
 import time
 
@@ -42,6 +43,7 @@ from retriever import (
     extract_datasheet_entity_tokens,
     normalize_datasheet_text,
 )
+from llm import call_llm
 
 
 def _skill_description() -> str:
@@ -674,6 +676,26 @@ def _run_adaptive_retrieval(
         print("[search_datasheet_v2] primary evidence 足够强, 跳过 facet fallback")
         return primary[:TOP_K_TOTAL]
 
+    bilingual_query = _build_bilingual_query_slice(topic_or_query)
+    if bilingual_query:
+        print(
+            "[search_datasheet_v2] primary evidence 偏弱, "
+            f"bilingual query={bilingual_query!r}"
+        )
+        bilingual = _run_single_query_retrieval(
+            retriever,
+            bilingual_query,
+            where,
+            target_sources,
+            top_k=DATASHEET_V2_PRIMARY_TOP_K,
+            facet_label="bilingual_query",
+        )
+        merged = _merge_primary_and_fallback(primary, bilingual, total=TOP_K_TOTAL)
+        if _bilingual_evidence_is_strong(bilingual, bilingual_query):
+            print("[search_datasheet_v2] bilingual evidence 足够强, 跳过 facet fallback")
+            return merged
+        primary = merged
+
     selected_facets = _select_adaptive_facets(topic_or_query, max_facets=DATASHEET_V2_ADAPTIVE_MAX_FACETS)
     if not selected_facets:
         print("[search_datasheet_v2] 未选中相关 facet, 返回 primary 结果")
@@ -715,6 +737,71 @@ def _run_single_query_retrieval(
     return tagged
 
 
+def _build_bilingual_query_slice(query: str) -> str | None:
+    """Ask the LLM for an alternate-language datasheet retrieval query."""
+    query = " ".join((query or "").split()).strip()
+    if not query:
+        return None
+
+    prompt = f"""\
+你是 datasheet / 芯片规格书检索 query 改写器。
+
+任务:
+- 将用户的检索 query 改写成另一种语言的 datasheet 检索关键词。
+- 如果输入主要是中文, 输出英文 datasheet-style keywords。
+- 如果输入主要是英文, 输出中文检索关键词。
+- 保留已有英文缩写、接口名、寄存器名、型号、单位、符号, 例如 ESD、I2C、HBM、VCC、MHz。
+- 不要回答问题, 不要补充事实, 不要推断数值。
+- 不要输出与原 query 基本相同的内容。
+- 输出应像 datasheet 检索关键词，而不是自然语言回答。
+- 如果输入很短，输出也应尽量短；如果输入是长句，可以保留长句中的所有显式约束。
+- 不要添加相关但未出现的概念、参数、场景、原因、后果。 
+- 只翻译或改写输入 query 中已经明确出现的概念。
+
+只输出 JSON, 不要 Markdown:
+{{"query": "alternate retrieval keywords"}}
+
+输入 query: {query}
+"""
+    raw = call_llm(prompt)
+    alternate = _parse_bilingual_query_response(raw)
+    if not alternate:
+        print("[search_datasheet_v2] bilingual query 未生成, 跳过")
+        return None
+    if normalize_datasheet_text(alternate).casefold() == normalize_datasheet_text(query).casefold():
+        print("[search_datasheet_v2] bilingual query 与 primary 相同, 跳过")
+        return None
+    return alternate
+
+
+def _parse_bilingual_query_response(raw: str) -> str | None:
+    """Extract the alternate query string from a strict JSON-ish LLM response."""
+    if not raw or not raw.strip():
+        return None
+    start = raw.find("{")
+    end = raw.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        candidate = raw.strip().strip('"').strip("'")
+        return _clean_bilingual_query(candidate)
+    try:
+        data = json.loads(raw[start:end + 1])
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    return _clean_bilingual_query(str(data.get("query") or ""))
+
+
+def _clean_bilingual_query(query: str) -> str | None:
+    cleaned = " ".join((query or "").split()).strip()
+    cleaned = cleaned.strip("`\"'，。；;")
+    if not cleaned:
+        return None
+    if len(cleaned) > 160:
+        cleaned = cleaned[:160].rsplit(" ", 1)[0].strip() or cleaned[:160].strip()
+    return cleaned or None
+
+
 def _primary_evidence_is_strong(results: list[dict], query: str) -> bool:
     """Conservative gate: only skip fallback when top evidence directly echoes query terms."""
     if not results:
@@ -731,6 +818,21 @@ def _primary_evidence_is_strong(results: list[dict], query: str) -> bool:
     enough_terms = matched_terms >= min(2, len(query_terms))
     direct_evidence = _matches_any(_DIRECT_EVIDENCE_PATTERNS, top_text)
     return enough_terms and (direct_evidence or len(results) >= 3)
+
+
+def _bilingual_evidence_is_strong(results: list[dict], query: str) -> bool:
+    """Bilingual slice is strong when a single evidence item covers the alternate query."""
+    if _primary_evidence_is_strong(results, query):
+        return True
+    query_terms = _high_signal_query_terms(query)
+    if not query_terms:
+        return bool(results)
+    required = min(2, len(query_terms))
+    for result in results[:3]:
+        text_norm = normalize_datasheet_text(result.get("text") or "").casefold()
+        if sum(1 for term in query_terms if term in text_norm) >= required:
+            return True
+    return False
 
 
 def _select_adaptive_facets(query: str, max_facets: int = 2) -> list[str]:
