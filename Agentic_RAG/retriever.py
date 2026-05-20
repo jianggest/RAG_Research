@@ -181,6 +181,23 @@ def _metadata_for_chunk(chunk: dict) -> dict:
     return metadata
 
 
+def _chunk_matches_where(chunk: dict, where: dict | None) -> bool:
+    """Apply the small Chroma-style metadata filters used by local sparse search."""
+    if not where:
+        return True
+
+    for key, condition in where.items():
+        value = chunk.get(key)
+        if isinstance(condition, dict):
+            if "$in" in condition and value not in condition["$in"]:
+                return False
+            if "$eq" in condition and value != condition["$eq"]:
+                return False
+        elif value != condition:
+            return False
+    return True
+
+
 def build_specification_reading_closure(query: str, source_path: str | Path) -> dict:
     """Build a structured reading closure for specification-style documents.
 
@@ -881,11 +898,12 @@ class Retriever:
                 break
         return merged
 
-    def bm25_search(self, query: str, top_k: int = TOP_K) -> list[SearchResult]:
+    def bm25_search(self, query: str, top_k: int = TOP_K, where: dict = None) -> list[SearchResult]:
         """
         BM25 关键词检索。
 
         适用场景：精确实体查找（城市名、职级名等），比向量检索更能命中含有该关键词的 chunk。
+        where: metadata 过滤条件，先收窄 BM25 候选 corpus，再构建稀疏索引。
         依赖：pip install rank-bm25
         """
         if not self._chunks or not query.strip():
@@ -897,8 +915,12 @@ class Retriever:
             print("[Retriever] ❌ 未安装 rank-bm25，运行：pip install rank-bm25")
             return []
 
+        candidate_chunks = [chunk for chunk in self._chunks if _chunk_matches_where(chunk, where)]
+        if not candidate_chunks:
+            return []
+
         # jieba 词级分词；未安装时降级为字符级分词
-        tokenized_corpus = [_tokenize(c.get("normalized_text", c["text"])) for c in self._chunks]
+        tokenized_corpus = [_tokenize(c.get("normalized_text", c["text"])) for c in candidate_chunks]
         tokenized_query = _tokenize(normalize_datasheet_text(query))
 
         bm25 = BM25Okapi(tokenized_corpus)
@@ -909,16 +931,16 @@ class Retriever:
 
         return [
             SearchResult(
-                text=self._chunks[i]["text"],
-                source=self._chunks[i]["source"],
+                text=candidate_chunks[i]["text"],
+                source=candidate_chunks[i]["source"],
                 score=round(float(scores[i]), 4),
-                is_table=bool(self._chunks[i].get("is_table", False)),
-                is_datasheet=bool(self._chunks[i].get("is_datasheet", False)),
-                index_kind=self._chunks[i].get("index_kind", "block"),
-                anchors_used=list(self._chunks[i].get("anchors_used") or []),
-                anchors_defined=list(self._chunks[i].get("anchors_defined") or []),
-                refs_outbound=list(self._chunks[i].get("refs_outbound") or []),
-                figure_refs=list(self._chunks[i].get("figure_refs") or []),
+                is_table=bool(candidate_chunks[i].get("is_table", False)),
+                is_datasheet=bool(candidate_chunks[i].get("is_datasheet", False)),
+                index_kind=candidate_chunks[i].get("index_kind", "block"),
+                anchors_used=list(candidate_chunks[i].get("anchors_used") or []),
+                anchors_defined=list(candidate_chunks[i].get("anchors_defined") or []),
+                refs_outbound=list(candidate_chunks[i].get("refs_outbound") or []),
+                figure_refs=list(candidate_chunks[i].get("figure_refs") or []),
             )
             for i in top_indices
             if scores[i] > 0
@@ -933,7 +955,7 @@ class Retriever:
         where: metadata 过滤条件，传给 vector_search 限定来源域，防止增强索引跨域污染。
         """
         vector_results = self.vector_search(query, top_k=top_k * 2, where=where)
-        bm25_results = self.bm25_search(query, top_k=top_k * 2)
+        bm25_results = self.bm25_search(query, top_k=top_k * 2, where=where)
 
         if not bm25_results:
             base_results = vector_results[:top_k]
@@ -960,7 +982,7 @@ class Retriever:
             where:  metadata 过滤条件（仅 vector 支持），如 {"is_table": True}
         """
         if method == "bm25":
-            return self.bm25_search(query, top_k)
+            return self.bm25_search(query, top_k, where=where)
         if method == "hybrid":
             return self.hybrid_search(query, top_k, where=where)
         return self.vector_search(query, top_k, where=where)
