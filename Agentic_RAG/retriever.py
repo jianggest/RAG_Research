@@ -149,6 +149,7 @@ def build_datasheet_row_chunks(structure_path: str | Path) -> list[dict]:
             "anchors_used": [],
             "anchors_defined": [],
             "refs_outbound": [],
+            "figure_refs": [],
             "row_id": row.get("row_id", ""),
             "table_id": row.get("table_id", ""),
             "section_id": section_id,
@@ -170,6 +171,7 @@ def _metadata_for_chunk(chunk: dict) -> dict:
         "anchors_used":    _serialize_anchor_list(chunk.get("anchors_used")),
         "anchors_defined": _serialize_anchor_list(chunk.get("anchors_defined")),
         "refs_outbound":   _serialize_anchor_list(chunk.get("refs_outbound")),
+        "figure_refs":     _serialize_anchor_list(chunk.get("figure_refs")),
     }
     for key in ("row_id", "table_id", "section_id"):
         if chunk.get(key) is not None:
@@ -434,6 +436,7 @@ class SearchResult(TypedDict):
     anchors_used: list[str]
     anchors_defined: list[str]
     refs_outbound: list[str]
+    figure_refs: list[str]
 
 
 _CROSS_REF_SECTION_HEADING_RE = re.compile(r"^#{1,6}\s+(\d+(?:\.\d+)*)\b")
@@ -497,6 +500,7 @@ def _chunk_to_search_result(
         anchors_used=list(chunk.get("anchors_used") or []),
         anchors_defined=list(chunk.get("anchors_defined") or []),
         refs_outbound=list(chunk.get("refs_outbound") or []),
+        figure_refs=list(chunk.get("figure_refs") or []),
     )
     if facet:
         result["facet"] = facet
@@ -805,6 +809,7 @@ class Retriever:
                     anchors_used=_deserialize_anchor_list(meta.get("anchors_used")),
                     anchors_defined=_deserialize_anchor_list(meta.get("anchors_defined")),
                     refs_outbound=_deserialize_anchor_list(meta.get("refs_outbound")),
+                    figure_refs=_deserialize_anchor_list(meta.get("figure_refs")),
                 )
         results = sorted(seen.values(), key=lambda r: r["score"], reverse=True)[:top_k]
         print(f"[Retriever] vector_search top{len(results)} 分数: {[r['score'] for r in results]}")
@@ -858,6 +863,7 @@ class Retriever:
                                 anchors_used=list(chunk.get("anchors_used") or []),
                                 anchors_defined=list(chunk.get("anchors_defined") or []),
                                 refs_outbound=list(chunk.get("refs_outbound") or []),
+                                figure_refs=list(chunk.get("figure_refs") or []),
                             )
                         ]
                         break
@@ -912,6 +918,7 @@ class Retriever:
                 anchors_used=list(self._chunks[i].get("anchors_used") or []),
                 anchors_defined=list(self._chunks[i].get("anchors_defined") or []),
                 refs_outbound=list(self._chunks[i].get("refs_outbound") or []),
+                figure_refs=list(self._chunks[i].get("figure_refs") or []),
             )
             for i in top_indices
             if scores[i] > 0
@@ -1050,6 +1057,7 @@ def _source_evidence(text: str, retriever, query_type: str, section_id: str, sou
     # 从源文本片段实时提取结构锚（无 chunk 上下文可用）。
     # 延迟 import 避免与 document_loader 形成顶层循环依赖。
     from document_loader import _extract_anchors, _extract_refs_outbound
+    from pdf_figure_extractor import _extract_figure_refs
     anchors_used, anchors_defined = _extract_anchors(text)
     refs_outbound = _extract_refs_outbound(text)
     return SearchResult(
@@ -1062,6 +1070,7 @@ def _source_evidence(text: str, retriever, query_type: str, section_id: str, sou
         anchors_used=anchors_used,
         anchors_defined=anchors_defined,
         refs_outbound=refs_outbound,
+        figure_refs=_extract_figure_refs(text),
         section_id=section_id,
         source_line=source_line,
     )
@@ -1110,6 +1119,7 @@ def plan_datasheet_evidence_bundle(query: str, retriever, top_k: int = TOP_K) ->
                     anchors_used=list(c.get("anchors_used") or []),
                     anchors_defined=list(c.get("anchors_defined") or []),
                     refs_outbound=list(c.get("refs_outbound") or []),
+                    figure_refs=list(c.get("figure_refs") or []),
                 )
                 for c in getattr(retriever, "chunks", [])
                 if "100-kHz baud rate" in c.get("text", "")
@@ -1199,6 +1209,7 @@ def _rrf_merge(
             anchors_used=list(text_to_result[key].get("anchors_used") or []),
             anchors_defined=list(text_to_result[key].get("anchors_defined") or []),
             refs_outbound=list(text_to_result[key].get("refs_outbound") or []),
+            figure_refs=list(text_to_result[key].get("figure_refs") or []),
         )
         for key in sorted_keys
     ]

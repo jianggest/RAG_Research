@@ -12,6 +12,7 @@ import re
 from pathlib import Path
 
 from agentic_rag import run
+from app_figure_assets import collect_figure_images_from_steps
 from config import SHOW_HOME_DEBUG_PANELS, get_knowledge_base_dir, get_rag_profile
 from document_loader import load_documents
 from evaluator import get_stats, record_satisfied, record_unsatisfied
@@ -388,6 +389,20 @@ def _render_result(result: dict) -> None:
     else:
         st.markdown(display_answer)
     _render_structured_references(structured_refs, result.get("executed_steps", []))
+
+    # Figure 展示：根据检索结果 metadata.figure_refs 解析 figures.json 并显示对应 PNG。
+    figure_images = collect_figure_images_from_steps(
+        get_knowledge_base_dir(),
+        result.get("executed_steps", []),
+    )
+    if figure_images:
+        st.markdown("#### 🖼️ 相关 Figure")
+        cols = st.columns(min(len(figure_images), 3))
+        for i, fig in enumerate(figure_images):
+            caption = fig.figure_id
+            if fig.caption:
+                caption += f" — {fig.caption}"
+            cols[i % 3].image(str(fig.path), caption=caption, width="stretch")
 
     # 图片来源页展示：根据 Generator 在回答中标注的 [引用页面: 第N页] 来确定显示哪些图片
     page_images = _extract_cited_images(result["answer"], result.get("executed_steps", []))

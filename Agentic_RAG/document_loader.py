@@ -20,6 +20,7 @@ from typing import TypedDict
 
 from config import CHUNK_SIZE, DATASHEET_SOURCES
 from document_catalog import write_document_catalog
+from pdf_figure_extractor import _extract_figure_refs, extract_pdf_figures
 from retriever import extract_datasheet_entity_tokens, normalize_datasheet_text
 
 
@@ -39,6 +40,8 @@ class Chunk(TypedDict):
     anchors_used: list[str]
     anchors_defined: list[str]
     refs_outbound: list[str]
+    # Figure 截图引用：正文中显式出现的 Figure x-y，用于搜索结果附图。
+    figure_refs: list[str]
 
 
 # ── PDF 转换 ──────────────────────────────────────────────────────────────────
@@ -320,6 +323,7 @@ def _build_chunk(
         anchors_used=anchors_used,
         anchors_defined=anchors_defined,
         refs_outbound=refs_outbound,
+        figure_refs=_extract_figure_refs(stripped),
     )
 
 
@@ -433,10 +437,11 @@ def chunk_text(
 def load_documents(kb_dir: Path) -> list[Chunk]:
     """
     加载 kb_dir 下所有文档，返回 chunk 列表。
-    执行顺序：PDF 转换 → 文档清洗 → .md 分块 → .txt 分块
+    执行顺序：PDF Figure 截图与索引 → PDF 转换 → 文档清洗 → .md 分块 → .txt 分块
     """
     from doc_cleaner import clean_documents
 
+    extract_pdf_figures(kb_dir)
     convert_pdfs(kb_dir)
     clean_documents(kb_dir)
 
