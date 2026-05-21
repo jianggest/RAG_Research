@@ -439,7 +439,7 @@ with st.sidebar:
 
 # ── 主区域：问答 ──────────────────────────────────────────────────────────────
 
-question = st.text_input("请输入问题", placeholder="例如：深圳出差住宿费是多少？")
+question = st.text_input("请输入问题", placeholder="")
 submitted = st.button("提问", type="primary")
 
 
@@ -644,6 +644,9 @@ def _render_result(result: dict) -> None:
     figure_images = collect_figure_images_from_steps(
         get_knowledge_base_dir(),
         result.get("executed_steps", []),
+        answer=display_answer,
+        min_score=0.7,
+        max_images=3,
     )
     if figure_images:
         st.markdown("#### 🖼️ 相关 Figure")
