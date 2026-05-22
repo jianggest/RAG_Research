@@ -148,7 +148,16 @@ def _safe_pdf_upload_target(kb_dir: Path, filename: str) -> tuple[Path | None, s
     return target, None
 
 
-def process_uploaded_pdf(kb_dir: Path, pdf_path: Path, st_api=st) -> None:
+def process_uploaded_pdf(kb_dir: Path, pdf_path: Path, st_api=st, show_status: bool = True) -> None:
+    if not show_status:
+        extract_pdf_figures(kb_dir, only_pdf_stem=pdf_path.stem)
+        convert_pdfs(kb_dir)
+        clean_documents(kb_dir)
+        chunks = load_documents(kb_dir)
+        refreshed_retriever = Retriever(chunks)
+        refreshed_retriever.build_index()
+        return
+
     with st_api.status("正在处理上传文档...", expanded=True) as status:
         status.write("1/4 提取图片")
         extract_pdf_figures(kb_dir, only_pdf_stem=pdf_path.stem)
@@ -178,6 +187,7 @@ def render_knowledge_base_documents_sidebar(
     profile = profile or get_rag_profile()
     clear_retriever_cache = clear_retriever_cache or init_retriever.clear
     uploaded_file = None
+    pending_uploaded_file = None
     uploader_key = f"kb_pdf_upload_{profile}_{st_api.session_state.get('kb_upload_reset_nonce', 0)}"
     upload_feedback = st_api.session_state.pop("kb_upload_feedback", None)
     pdf_files = sorted([p for p in kb_dir.iterdir() if p.is_file() and p.suffix.lower() == ".pdf"], key=lambda p: p.name.lower())
@@ -295,12 +305,41 @@ def render_knowledge_base_documents_sidebar(
             else:
                 st_api.warning(feedback_text)
 
-        if st_api.session_state.get("kb_upload_open", False):
+        if st_api.session_state.get("kb_upload_processing", False):
+            pending_name = st_api.session_state.get("kb_pending_upload_name")
+            pending_payload = st_api.session_state.get("kb_pending_upload_payload")
+            if pending_name is not None and pending_payload is not None:
+                target_path, error = _safe_pdf_upload_target(kb_dir, pending_name)
+                if error:
+                    st_api.session_state["kb_upload_open"] = False
+                    st_api.session_state["kb_upload_processing"] = False
+                    st_api.session_state.pop("kb_pending_upload_name", None)
+                    st_api.session_state.pop("kb_pending_upload_payload", None)
+                    st_api.session_state["kb_upload_feedback"] = ("error", error)
+                    st_api.rerun()
+                else:
+                    assert target_path is not None
+                    try:
+                        target_path.parent.mkdir(parents=True, exist_ok=True)
+                        target_path.write_bytes(bytes(pending_payload))
+                        process_uploaded_pdf(kb_dir, target_path, st_api)
+                        clear_retriever_cache()
+                    except Exception as exc:
+                        st_api.session_state["kb_upload_feedback"] = ("error", f"上传失败：文档处理失败：{exc}")
+                    else:
+                        st_api.session_state["kb_upload_feedback"] = ("success", f"上传完成：{target_path.name}")
+                    finally:
+                        st_api.session_state["kb_upload_open"] = False
+                        st_api.session_state["kb_upload_processing"] = False
+                        st_api.session_state.pop("kb_pending_upload_name", None)
+                        st_api.session_state.pop("kb_pending_upload_payload", None)
+                        st_api.rerun()
+        elif st_api.session_state.get("kb_upload_open", False):
             st_api.markdown('<div class="kb-upload-toolbar"></div>', unsafe_allow_html=True)
             if st_api.button("×", key=f"kb_close_upload_{profile}", help="关闭上传", type="tertiary"):
                 st_api.session_state["kb_upload_open"] = False
             if st_api.session_state.get("kb_upload_open", False):
-                uploaded_file = st_api.file_uploader(
+                pending_uploaded_file = st_api.file_uploader(
                     "选择PDF",
                     type=["pdf"],
                     label_visibility="visible",
@@ -308,6 +347,40 @@ def render_knowledge_base_documents_sidebar(
                     help="选择要加入当前知识库的 PDF",
                     width="stretch",
                 )
+                if pending_uploaded_file is not None:
+                    st_api.session_state["kb_pending_upload_payload"] = bytes(pending_uploaded_file.getbuffer())
+                    st_api.session_state["kb_pending_upload_name"] = pending_uploaded_file.name
+                    st_api.session_state["kb_upload_reset_nonce"] = st_api.session_state.get("kb_upload_reset_nonce", 0) + 1
+                    st_api.session_state["kb_upload_processing"] = True
+                    st_api.rerun()
+                    pending_name = st_api.session_state.get("kb_pending_upload_name")
+                    pending_payload = st_api.session_state.get("kb_pending_upload_payload")
+                    if pending_name is not None and pending_payload is not None:
+                        target_path, error = _safe_pdf_upload_target(kb_dir, pending_name)
+                        if error:
+                            st_api.session_state["kb_upload_open"] = False
+                            st_api.session_state["kb_upload_processing"] = False
+                            st_api.session_state.pop("kb_pending_upload_name", None)
+                            st_api.session_state.pop("kb_pending_upload_payload", None)
+                            st_api.session_state["kb_upload_feedback"] = ("error", error)
+                            st_api.rerun()
+                        else:
+                            assert target_path is not None
+                            try:
+                                target_path.parent.mkdir(parents=True, exist_ok=True)
+                                target_path.write_bytes(bytes(pending_payload))
+                                process_uploaded_pdf(kb_dir, target_path, st_api)
+                                clear_retriever_cache()
+                            except Exception as exc:
+                                st_api.session_state["kb_upload_feedback"] = ("error", f"上传失败：文档处理失败：{exc}")
+                            else:
+                                st_api.session_state["kb_upload_feedback"] = ("success", f"上传完成：{target_path.name}")
+                            finally:
+                                st_api.session_state["kb_upload_open"] = False
+                                st_api.session_state["kb_upload_processing"] = False
+                                st_api.session_state.pop("kb_pending_upload_name", None)
+                                st_api.session_state.pop("kb_pending_upload_payload", None)
+                                st_api.rerun()
 
         if not pdf_files:
             st_api.caption("暂无 PDF 文档")
@@ -326,40 +399,6 @@ def render_knowledge_base_documents_sidebar(
 
     if uploaded_file is None:
         return
-
-    target_path, error = _safe_pdf_upload_target(kb_dir, uploaded_file.name)
-    if error:
-        st_api.session_state["kb_upload_reset_nonce"] = st_api.session_state.get("kb_upload_reset_nonce", 0) + 1
-        st_api.session_state["kb_upload_open"] = False
-        st_api.session_state["kb_upload_feedback"] = ("error", error)
-        st_api.rerun()
-        return
-    assert target_path is not None
-
-    try:
-        target_path.parent.mkdir(parents=True, exist_ok=True)
-        target_path.write_bytes(bytes(uploaded_file.getbuffer()))
-    except Exception as exc:
-        st_api.session_state["kb_upload_reset_nonce"] = st_api.session_state.get("kb_upload_reset_nonce", 0) + 1
-        st_api.session_state["kb_upload_open"] = False
-        st_api.session_state["kb_upload_feedback"] = ("error", f"上传失败：PDF 保存失败：{exc}")
-        st_api.rerun()
-        return
-
-    try:
-        process_uploaded_pdf(kb_dir, target_path, st_api)
-    except Exception as exc:
-        st_api.session_state["kb_upload_reset_nonce"] = st_api.session_state.get("kb_upload_reset_nonce", 0) + 1
-        st_api.session_state["kb_upload_open"] = False
-        st_api.session_state["kb_upload_feedback"] = ("error", f"上传失败：文档处理失败：{exc}")
-        st_api.rerun()
-        return
-
-    clear_retriever_cache()
-    st_api.session_state["kb_upload_reset_nonce"] = st_api.session_state.get("kb_upload_reset_nonce", 0) + 1
-    st_api.session_state["kb_upload_open"] = False
-    st_api.success(f"上传完成：{target_path.name}")
-    st_api.rerun()
 
 
 # ── session_state 初始化 ──────────────────────────────────────────────────────
@@ -645,6 +684,7 @@ def _render_result(result: dict) -> None:
         get_knowledge_base_dir(),
         result.get("executed_steps", []),
         answer=display_answer,
+        query=result.get("question"),
         min_score=0.7,
         max_images=3,
     )
