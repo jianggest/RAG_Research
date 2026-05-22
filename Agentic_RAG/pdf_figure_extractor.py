@@ -21,6 +21,7 @@ FIGURE_CAPTION_RE = re.compile(
     re.IGNORECASE,
 )
 FIGURE_REF_RE = re.compile(r"\b(?:Figure|Fig\.)\s+(\d+(?:[-.]\d+)+)\b", re.IGNORECASE)
+EXTRACTOR_VERSION = "2026-05-20-caption-style-v2"
 
 
 @dataclass(frozen=True)
@@ -137,7 +138,10 @@ def _index_is_fresh(index_path: Path, pdf_path: Path) -> bool:
     except Exception:
         return False
     if isinstance(data, dict):
-        return data.get("pdf_signature") == _pdf_signature(pdf_path)
+        return (
+            data.get("pdf_signature") == _pdf_signature(pdf_path)
+            and data.get("extractor_version") == EXTRACTOR_VERSION
+        )
     # Backward compatibility for the initially suggested list-only format.
     return False
 
@@ -470,6 +474,7 @@ def extract_pdf_figures_for_file(pdf_path: Path, force: bool = False, dpi_scale:
 
     index_data = {
         "source_pdf": pdf_path.name,
+        "extractor_version": EXTRACTOR_VERSION,
         "pdf_signature": _pdf_signature(pdf_path),
         "figures": figures,
     }
